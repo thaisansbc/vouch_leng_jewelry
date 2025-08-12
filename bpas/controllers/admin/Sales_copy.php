@@ -1,0 +1,14942 @@
+<?php
+defined('BASEPATH') or exit('No direct script access allowed');
+
+class Sales extends MY_Controller
+{
+    public function __construct()
+    {
+        parent::__construct();
+
+        if (!$this->loggedIn) {
+            $this->session->set_userdata('requested_page', $this->uri->uri_string());
+            $this->bpas->md('login');
+        }
+        if ($this->Supplier) {
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        $this->lang->admin_load('sales', $this->Settings->user_language);
+        $this->load->library('form_validation');
+        $this->load->admin_model('sales_model');
+        $this->load->admin_model('auth_model');
+        $this->load->admin_model('projects_model');
+        $this->load->admin_model('quotes_model');
+        $this->load->admin_model('promos_model');
+        $this->load->admin_model('sales_order_model');
+        $this->load->admin_model('accounts_model');
+        $this->load->admin_model('table_model'); 
+        $this->load->admin_model('deliveries_model'); 
+        
+        $this->digital_upload_path = 'files/';
+        $this->upload_path         = 'assets/uploads/';
+        $this->thumbs_path         = 'assets/uploads/thumbs/';
+        $this->image_types         = 'gif|jpg|jpeg|png|tif';
+        $this->digital_file_types  = 'zip|psd|ai|rar|pdf|doc|docx|xls|xlsx|ppt|pptx|gif|jpg|jpeg|png|tif|txt';
+        $this->allowed_file_size   = '1024';
+        $this->data['logo']        = true;
+    }
+    
+    public function add($sale_order_id = null, $quote_id = null, $delivery_id = null, $prescription_id = null)
+    {   
+        $this->bpas->checkPermissions();
+        $sale_id = $this->input->get('sale_id') ? $this->input->get('sale_id') : null;
+        if (isset($sale_order_id)) {
+            $sale_o = $this->sales_order_model->getSaleOrder($sale_order_id);
+            if (isset($sale_o)) {
+                if ($sale_o->order_status == 'pending') {
+                    $this->session->set_flashdata('error', lang("sale_order_n_approved"));
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                if ($sale_o->order_status == 'rejected') {
+                    $this->session->set_flashdata('error', lang("sale_order_has_been_rejected"));
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                if ($sale_o->sale_status == 'completed') {
+                    $this->session->set_flashdata('error', lang("sale_order_has_been_created"));
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+            }
+        }
+        if (isset($prescription_id)) {
+            $pre = $this->sales_model->getPrescriptionByID($prescription_id);
+            if ($pre->sale_status == 'completed') {
+                $this->session->set_flashdata('error', lang("sale_has_been_created"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+        }
+        $this->form_validation->set_message('is_natural_no_zero', lang('no_zero_required'));
+        $this->form_validation->set_rules('customer', lang('customer'), 'required');
+        $this->form_validation->set_rules('biller', lang('biller'), 'required');
+        $this->form_validation->set_rules('sale_status', lang('sale_status'), 'required');
+        $this->form_validation->set_rules('payment_status', lang('payment_status'), 'required');
+        $this->form_validation->set_rules('reference_no', lang('reference_no'), 'required');
+        if ($this->form_validation->run() == true) {
+            if ($this->Owner || $this->Admin || $this->GP['change_invoiceNo']) {
+                // it is dubplicate $reference = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('so');
+                $reference = $this->site->CheckedSaleReference($this->input->post('reference_no'), $this->site->getReference('so'));
+            } else {
+                $reference = $this->site->getReference('so');
+            }
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            $consignment_id       = $this->input->post('consignment_id');
+            $project_id           = $this->input->post('project') ? $this->input->post('project') : $this->Settings->default_project ;
+            $warehouse_id         = $this->input->post('warehouse');
+            $customer_id          = $this->input->post('customer');
+            $biller_id            = $this->input->post('biller');
+            $total_items          = $this->input->post('total_items');
+            $sale_status          = $this->input->post('sale_status');
+            $payment_status       = $this->input->post('payment_status');
+            $payment_term         = $this->input->post('payment_term');
+            $payment_term_details = $this->site->getAllPaymentTermByID($payment_term);
+            if ($this->Settings->payment_term) {
+                $due_date = $payment_term ? date('Y-m-d', strtotime('+' . $payment_term . ' days', strtotime($date))) : null;
+            } else {
+                $due_date = (isset($payment_term_details[0]->id) ? date('Y-m-d', strtotime($date . '+' . $payment_term_details[0]->due_day . ' days')) : NULL);
+            }
+            $shipping           = $this->input->post('shipping') ? $this->input->post('shipping') : 0;
+            $surcharge          = $this->input->post('surcharge') ? $this->input->post('surcharge') : 0;
+            $customer_details   = $this->site->getCompanyByID($customer_id);
+            $customer           = !empty($customer_details->company) && $customer_details->company != '-' ? $customer_details->company.'/'.$customer_details->name : $customer_details->name;
+            $biller_details     = $this->site->getCompanyByID($biller_id);
+            $biller             = !empty($biller_details->company) && $biller_details->company != '-' ? $biller_details->company.'/'.$biller_details->name : $biller_details->name;
+            $note               = $this->bpas->clear_tags($this->input->post('note'));
+            $staff_note         = $this->bpas->clear_tags($this->input->post('staff_note'));
+            $quote_id           = $this->input->post('quote_id') ? $this->input->post('quote_id') : null;
+            $commission_product = 0;
+            $text_items         = "";
+            $total              = 0;
+            $product_tax        = 0;
+            $product_discount   = 0;
+            $digital            = false;
+            $stockmoves         = null;
+            $gst_data           = [];
+            $total_cgst         = $total_sgst       = $total_igst       = 0;
+            $i                  = isset($_POST['product_code']) ? sizeof($_POST['product_code']) : 0;
+            for ($r = 0; $r < $i; $r++) {
+                $item_id            = $_POST['product_id'][$r];
+                $item_type          = $_POST['product_type'][$r];
+                $item_code          = $_POST['product_code'][$r];
+                $item_name          = $_POST['product_name'][$r];
+                $real_unit_price    = $this->bpas->formatDecimal($_POST['real_unit_price'][$r]);
+                $unit_price         = $this->bpas->formatDecimal($_POST['unit_price'][$r]);
+                $item_unit_quantity = $_POST['quantity'][$r];
+                $item_serial        = isset($_POST['serial'][$r]) ? $_POST['serial'][$r] : null;
+                $item_max_serial    = isset($_POST['max_serial'][$r]) ? $_POST['max_serial'][$r] : '';
+                $item_tax_rate      = isset($_POST['product_tax'][$r]) ? $_POST['product_tax'][$r] : null;
+                $item_discount      = isset($_POST['product_discount'][$r]) ? $_POST['product_discount'][$r] : null;
+                $item_unit          = $_POST['product_unit'][$r];
+                $item_quantity      = $_POST['product_base_quantity'][$r];
+                $item_addition_type = isset($_POST['addition_type'][$r]) ? $_POST['addition_type'][$r] :'';
+                $item_warranty      = isset($_POST['warranty'][$r]) ? $_POST['warranty'][$r] : '';
+                $item_weight        = $_POST['product_weight'][$r];
+                $item_detail        = isset($_POST['product_detail'][$r]) ? $_POST['product_detail'][$r] : '';
+                $item_option        = isset($_POST['product_option'][$r]) && !empty($_POST['product_option'][$r]) && $_POST['product_option'][$r] != 'false' && $_POST['product_option'][$r] != 'undefined' && $_POST['product_option'][$r] != 'null' && $_POST['product_option'][$r] != 'NULL' ? $_POST['product_option'][$r] : null;
+                $item_expiry        = isset($_POST['product_expiry'][$r]) && !empty($_POST['product_expiry'][$r]) && $_POST['product_expiry'][$r] != 'false' && $_POST['product_expiry'][$r] != 'undefined' && $_POST['product_expiry'][$r] != 'null' && $_POST['product_expiry'][$r] != 'NULL' && $_POST['product_expiry'][$r] != '00/00/0000' && $_POST['product_expiry'][$r] != '' ? $_POST['product_expiry'][$r] : null; 
+                $saleman_item       = isset($_POST['saleman_item'][$r]) ? $_POST['saleman_item'][$r] : '';
+                if (isset($item_code) && isset($real_unit_price) && isset($unit_price) && isset($item_quantity)) {
+                    $product_details = $item_type != 'manual' ? $this->sales_model->getProductByID($item_id) : null;
+                    $cost = $product_details->cost;
+                    if ($item_type == 'digital') {
+                        $digital = true;
+                    }
+                    $pr_discount      = $this->site->calculateDiscount($item_discount, $unit_price);
+                    $unit_price       = $this->bpas->formatDecimal($unit_price - $pr_discount);
+                    $item_net_price   = $unit_price;
+                    $pr_item_discount = $this->bpas->formatDecimal($pr_discount * $item_unit_quantity);
+                    $product_discount += $pr_item_discount;
+                    $pr_item_tax = $item_tax = 0;
+                    $tax         = '';
+                    if (isset($item_tax_rate) && $item_tax_rate != 0) {
+                        $tax_details = $this->site->getTaxRateByID($item_tax_rate);
+                        $ctax        = $this->site->calculateTax($product_details, $tax_details, $unit_price);
+                        $item_tax    = $ctax['amount'];
+                        $tax         = $ctax['tax'];
+                        if (!$product_details || (!empty($product_details) && $product_details->tax_method != 1)) {
+                            $item_net_price = $unit_price - $item_tax;
+                        }
+                        $pr_item_tax = $this->bpas->formatDecimal($item_tax * $item_unit_quantity);
+                    }
+                    $product_tax       += $pr_item_tax;
+                    $subtotal           = (($item_net_price * $item_unit_quantity) + $pr_item_tax);
+                    $unit               = $this->site->getUnitByID($item_unit);
+                    $total_weight       = number_format((float) ($item_weight * $item_unit_quantity), 4, '.', '');
+                    $commission_item    = $this->site->getProductCommissionByID($item_id);
+                    $purchase_unit_cost = $product_details->cost;
+                    $saleman = $this->site->getuser($this->input->post('saleman_by'));
+                    if ($commission_item && $saleman) {
+                    	$commission_product += $commission_item->price * $item_quantity;
+                    }
+                    if ($unit->id != $product_details->unit) {
+                        $cost = $this->site->convertCostingToBase($purchase_unit_cost, $unit);
+                    } else {
+                        $cost = $cost;
+                    }
+                    $combo_products = json_decode($_POST['product_combo'][$r]);
+                    if ($product_details->type == 'combo' && $combo_products) { 
+                        $price_combo = 0;
+                        $qty_combo   = count($combo_products);
+                        $dicount     = 0;
+                        foreach ($combo_products as $combo_product) {
+                            $price_combo += $combo_product->price * $combo_product->qty;
+                        }
+                        if ($this->bpas->formatDecimal($price_combo) <> $this->bpas->formatDecimal($item_net_price)) {
+                            $dicount = (($price_combo - $item_net_price) * 100) / $price_combo;
+                        }
+                        $product_combo_cost = 0;
+                        foreach ($combo_products as $combo_product) {
+                            $combo_id    = $combo_product->id;
+                            $combo_code  = $combo_product->code;
+                            $combo_name  = $combo_product->name;
+                            $combo_qty   = $combo_product->qty * $item_quantity;
+                            $combo_price = $combo_product->price;
+                            if ($dicount > 0) {
+                                $combo_price = $combo_price - (($combo_price * $dicount) / 100);
+                            } else if ($dicount < 0) {
+                                $combo_price = $combo_price + (($combo_price * abs($dicount)) / 100);
+                            }
+                            if ($price_combo == 0 && $item_net_price > 0) {
+                                $combo_price = $item_net_price / $qty_combo;
+                            }
+                            $combo_detail = $this->site->getProductByID($combo_id);
+                            if ($combo_detail) {
+                                $combo_unit = $this->site->getProductUnit($combo_id, $combo_detail->unit);
+                                if ($this->Settings->accounting_method == '0') {
+                                    $costs = $this->site->getFifoCost($combo_id, $combo_qty, $stockmoves);
+                                } else if ($this->Settings->accounting_method == '1') {
+                                    $costs = $this->site->getLifoCost($combo_id, $combo_qty, $stockmoves);
+                                } else if ($this->Settings->accounting_method == '3') {
+                                    $costs = $this->site->getProductMethod($combo_id, $combo_qty, $stockmoves);
+                                }
+                                if (isset($costs) && $costs) {
+                                    $item_cost_qty   = 0;
+                                    $item_cost_total = 0;
+                                    $item_costs      = '';
+                                    foreach ($costs as $cost_item) {
+                                        $item_cost_qty   += $cost_item['quantity'];
+                                        $item_cost_total += $cost_item['cost'] * $cost_item['quantity'];
+                                        $stockmoves[] = array(
+                                            'transaction'    => 'Sale',
+                                            'product_id'     => $combo_detail->id,
+                                            'product_type'   => $combo_detail->type,
+                                            'product_code'   => $combo_detail->code,
+                                            'product_name'   => $combo_detail->name,
+                                            'quantity'       => $cost_item['quantity'] * (-1),
+                                            'unit_quantity'  => $combo_unit->unit_qty,
+                                            'unit_code'      => $combo_unit->code,
+                                            'unit_id'        => $combo_detail->unit,
+                                            'expiry'         => $item_expiry,
+                                            'warehouse_id'   => $warehouse_id,
+                                            'date'           => $date,
+                                            'real_unit_cost' => $cost_item['cost'],
+                                            'reference_no'   => $reference,
+                                            'user_id'        => $this->session->userdata('user_id'),
+                                        );
+                                        //========accounting=========//
+                                        if ($this->Settings->module_account == 1 && ($sale_status == 'completed' || $sale_status == 'consignment')) {
+                                            $accTrans[] = array(
+                                                'tran_type'     => 'Sale',
+                                                'tran_date'     => $date,
+                                                'reference_no'  => $reference,
+                                                'account_code'  => $this->accounting_setting->default_stock,
+                                                'amount'        => -($cost_item['cost'] * $cost_item['quantity']),
+                                                'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                                'description'   => $note,
+                                                'biller_id'     => $biller_id,
+                                                'project_id'    => $project_id,
+                                                'customer_id'   => $customer_id,
+                                                'created_by'    => $this->session->userdata('user_id'),
+                                            );
+                                            $accTrans[] = array(
+                                                'tran_type'     => 'Sale',
+                                                'tran_date'     => $date,
+                                                'reference_no'  => $reference,
+                                                'account_code'  => $this->accounting_setting->default_cost,
+                                                'amount'        => ($cost_item['cost'] * $cost_item['quantity']),
+                                                'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                                'description'   => $note,
+                                                'biller_id'     => $biller_id,
+                                                'project_id'    => $project_id,
+                                                'customer_id'   => $customer_id,
+                                                'created_by'    => $this->session->userdata('user_id'),
+                                                'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost)
+                                            );
+                                        }
+                                        //============end accounting=======//
+                                        $item_costs .='#'.$cost_item['cost'].'='.$cost_item['quantity'];
+                                    }
+                                    $productAcc = $this->site->getProductAccByProductId($combo_id);
+                                    $default_sale  = ($combo_detail->type == 'standard') ? $this->accounting_setting->default_sale : $this->accounting_setting->other_income;
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $default_sale,
+                                        'amount'        => -($combo_price * $combo_qty),
+                                        'narrative'     => $this->site->getAccountName($default_sale),
+                                        'description'   => $note,
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'customer_id'   => $customer_id,
+                                        'created_by'    => $this->session->userdata('user_id'),
+                                    );
+                                    $product_combo_cost += ($item_cost_total / $item_cost_qty);
+                                } else {
+                                    $product_combo_cost += ($combo_qty * $combo_detail->cost);
+                                    $stockmoves[] = array(
+                                        'transaction'    => 'Sale',
+                                        'product_id'     => $combo_detail->id,
+                                        'product_type'   => $combo_detail->type,
+                                        'product_code'   => $combo_detail->code,
+                                        'product_name'   => $combo_detail->name,
+                                        'quantity'       => $combo_qty * -1,
+                                        'unit_quantity'  => $combo_unit->unit_qty,
+                                        'expiry'         => $item_expiry,
+                                        'unit_code'      => $combo_unit->code,
+                                        'unit_id'        => $combo_detail->unit,
+                                        'warehouse_id'   => $warehouse_id,
+                                        'date'           => $date,
+                                        'real_unit_cost' => $combo_detail->cost,
+                                        'reference_no'   => $reference,
+                                        'user_id'        => $this->session->userdata('user_id'),
+                                    );
+                                    //=======accounting=========//
+                                    if ($this->Settings->module_account == 1 && ($sale_status == 'completed' || $sale_status == 'consignment')) {
+                                        $productAcc   = $this->site->getProductAccByProductId($combo_detail->id);
+                                        $default_sale = ($item_type == 'standard') ? $this->accounting_setting->default_sale : $this->accounting_setting->other_income;
+                                        $accTrans[] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_date'     => $date,
+                                            'reference_no'  => $reference,
+                                            'account_code'  => $this->accounting_setting->default_stock,
+                                            'amount'        => -($combo_detail->cost * $combo_qty),
+                                            'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                            'description'   => $note,
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'customer_id'   => $customer_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                        );
+                                        $accTrans[] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_date'     => $date,
+                                            'reference_no'  => $reference,
+                                            'account_code'  => $this->accounting_setting->default_cost,
+                                            'amount'        => ($combo_detail->cost * $combo_qty),
+                                            'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                            'description'   => $note,
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'customer_id'   => $customer_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost)
+                                        );
+                                        $accTrans[] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_date'     => $date,
+                                            'reference_no'  => $reference,
+                                            'account_code'  => $default_sale,
+                                            'amount'        => -($combo_price * $combo_qty),
+                                            'narrative'     => $this->site->getAccountName($default_sale),
+                                            'description'   => $note,
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'customer_id'   => $customer_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                        );
+                                    }
+                                    //============end accounting=======//
+                                }
+                                $raw_materials[] = array(
+                                    "product_id" => $combo_detail->id,
+                                    "quantity"   => $combo_qty
+                                );
+                            }
+                        }
+                        $cost  = $product_combo_cost;
+                    } else {
+                        if ($this->Settings->accounting_method == '0') {
+                            $costs = $this->site->getFifoCost($item_id, $item_quantity, $stockmoves);
+                        } else if ($this->Settings->accounting_method == '1') {
+                            $costs = $this->site->getLifoCost($item_id, $item_quantity, $stockmoves);
+                        } else if ($this->Settings->accounting_method == '3') {
+                            $costs = $this->site->getProductMethod($item_id, $item_quantity, $stockmoves);
+                        }
+                        if (isset($costs) && $costs && $item_quantity > 0) {
+                            $item_cost_qty   = 0;
+                            $item_cost_total = 0;
+                            $item_costs      = '';
+                            foreach ($costs as $cost_item) {
+                                $item_cost_qty   += $cost_item['quantity'];
+                                $item_cost_total += $cost_item['cost'] * $cost_item['quantity'];
+                                $stockmoves[] = array(
+                                    'transaction'    => 'Sale',
+                                    'product_id'     => $item_id,
+                                    'product_type'   => $item_type,
+                                    'product_code'   => $item_code,
+                                    'product_name'   => $item_name,
+                                    'option_id'      => $item_option,
+                                    'quantity'       => $cost_item['quantity'] * (-1),
+                                    'unit_quantity'  => !empty($unit->operation_value) ? $unit->operation_value : 1,
+                                    'expiry'         => $item_expiry,
+                                    'unit_code'      => $unit->code,
+                                    'unit_id'        => $item_unit,
+                                    'warehouse_id'   => $warehouse_id,
+                                    'date'           => $date,
+                                    'real_unit_cost' => $cost_item['cost'],
+                                    'serial_no'      => $item_serial,
+                                    'reference_no'   => $reference,
+                                    'user_id'        => $this->session->userdata('user_id'),
+                                );
+                                //========accounting=========//
+                                if ($this->Settings->module_account == 1 && $item_type != 'manual' && ($sale_status == 'completed' || $sale_status == 'consignment')) {
+                                    $productAcc = $this->site->getProductAccByProductId($item_id);
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $this->accounting_setting->default_stock,
+                                        'amount'        => -($cost_item['cost'] * $cost_item['quantity']),
+                                        'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                        'description'   => $note,
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'customer_id'   => $customer_id,
+                                        'created_by'    => $this->session->userdata('user_id'),
+                                    );
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $this->accounting_setting->default_cost,
+                                        'amount'        => ($cost_item['cost'] * $cost_item['quantity']),
+                                        'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                        'description'   => $note,
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'customer_id'   => $customer_id,
+                                        'created_by'    => $this->session->userdata('user_id'),
+                                        'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost)
+                                    );
+                                }
+                                //============end accounting=======//
+                                $item_costs .='#'.$cost_item['cost'].'='.$cost_item['quantity'];
+                            }
+                            $cost = $item_cost_total / $item_cost_qty;
+                        } else {
+                            $stockmoves[] = array(
+                                'transaction'    => 'Sale',
+                                'product_id'     => $item_id,
+                                'product_type'   => $item_type,
+                                'product_code'   => $item_code,
+                                'product_name'   => $item_name,
+                                'option_id'      => $item_option,
+                                'quantity'       => $item_quantity * (-1),
+                                'unit_quantity'  => !empty($unit->operation_value) ? $unit->operation_value : 1,
+                                'expiry'         => $item_expiry,
+                                'unit_code'      => $unit->code,
+                                'unit_id'        => $item_unit,
+                                'warehouse_id'   => $warehouse_id,
+                                'date'           => $date,
+                                'real_unit_cost' => ($item_quantity < 0 ? (($item_net_price + $item_tax) / (!empty($unit->operation_value) ? $unit->operation_value : 1)) : $cost),
+                                'serial_no'      => $item_serial,
+                                'reference_no'   => $reference,
+                                'user_id'        => $this->session->userdata('user_id'),
+                            );
+                            //========accounting=========//
+                            if ($this->Settings->module_account == 1 && $item_type != 'manual' && ($sale_status == 'completed' || $sale_status == 'consignment')) {
+                                $productAcc = $this->site->getProductAccByProductId($item_id);
+                                $accTrans[] = array(
+                                    'tran_type'     => 'Sale',
+                                    'tran_date'     => $date,
+                                    'reference_no'  => $reference,
+                                    'account_code'  => $this->accounting_setting->default_stock,
+                                    'amount'        => -($cost * $item_unit_quantity),
+                                    'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                    'description'   => $note,
+                                    'biller_id'     => $biller_id,
+                                    'project_id'    => $project_id,
+                                    'customer_id'   => $customer_id,
+                                    'created_by'    => $this->session->userdata('user_id'),
+                                );
+                                $accTrans[] = array(
+                                    'tran_type'     => 'Sale',
+                                    'tran_date'     => $date,
+                                    'reference_no'  => $reference,
+                                    'account_code'  => $this->accounting_setting->default_cost,
+                                    'amount'        => ($cost * $item_unit_quantity),
+                                    'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                    'description'   => $note,
+                                    'biller_id'     => $biller_id,
+                                    'project_id'    => $project_id,
+                                    'customer_id'   => $customer_id,
+                                    'created_by'    => $this->session->userdata('user_id'),
+                                    'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost)
+                                );
+                            }
+                            //============end accounting=======//
+                        }
+                    }
+                    if ($this->Settings->module_account == 1) {
+                        $getproduct    = $this->site->getProductByID($item_id);
+                        $default_sale  = ($item_type == 'standard') ? $this->accounting_setting->default_sale : $this->accounting_setting->other_income;
+                        $inventory_acc = $this->accounting_setting->default_stock;
+                        $costing_acc   = $this->accounting_setting->default_cost;        
+                        $product_tax   = $this->bpas->formatDecimal($product_tax);
+                        if ($product_details->type != 'combo') {
+                            $accTrans[] = array(
+                                'tran_type'     => 'Sale',
+                                'tran_date'     => $date,
+                                'reference_no'  => $reference,
+                                'account_code'  => $default_sale,
+                                'amount'        => -($product_tax >0 ? ($subtotal-$product_tax) : $subtotal),
+                                'narrative'     => $this->site->getAccountName($default_sale),
+                                'description'   => $note,
+                                'biller_id'     => $biller_id,
+                                'project_id'    => $project_id,
+                                'customer_id'   => $customer_id,
+                                'created_by'    => $this->session->userdata('user_id'),
+                            );
+                        }
+                        if ($product_tax > 0) {
+                            $accTrans[] = array(
+                                'tran_type'     => 'Sale',
+                                'tran_date'     => $date,
+                                'reference_no'  => $reference,
+                                'account_code'  => $this->accounting_setting->default_sale_tax,
+                                'amount'        => -($product_tax),
+                                'narrative'     => $this->site->getAccountName($this->accounting_setting->default_sale_tax),
+                                'description'   => $note,
+                                'biller_id'     => $biller_id,
+                                'project_id'    => $project_id,
+                                'customer_id'   => $customer_id,
+                                'created_by'    => $this->session->userdata('user_id'),
+                            );
+                        }
+                    }
+                    $product = [
+                        'product_id'        => $item_id,
+                        'product_code'      => $item_code,
+                        'product_name'      => $item_name,
+                        'product_type'      => $item_type,
+                        'option_id'         => $item_option,
+                        'cost'              => $cost,
+                        'purchase_unit_cost'=> $purchase_unit_cost ? $purchase_unit_cost : NULL,
+                        'net_unit_price'    => $item_net_price,
+                        'unit_price'        => $this->bpas->formatDecimal($item_net_price + $item_tax),
+                        'quantity'          => $item_quantity,
+                        'expiry'            => $item_expiry,
+                        'product_unit_id'   => $unit ? $unit->id : null,
+                        'product_unit_code' => $unit ? $unit->code : null,
+                        'unit_quantity'     => $item_unit_quantity,
+                        'warehouse_id'      => $warehouse_id,
+                        'item_tax'          => $pr_item_tax,
+                        'tax_rate_id'       => $item_tax_rate,
+                        'tax'               => $tax,
+                        'discount'          => $item_discount,
+                        'item_discount'     => $pr_item_discount,
+                        'subtotal'          => $this->bpas->formatDecimal($subtotal),
+                        'serial_no'         => $item_serial,
+                        'max_serial'        => $item_max_serial,
+                        'real_unit_price'   => $real_unit_price,
+                        'addition_type'     => $item_addition_type,
+                        'warranty'          => $item_warranty,
+                        'weight'            => $item_weight,
+                        'total_weight'      => $total_weight,
+                        'comment'           => $item_detail,
+                        'saleman_by'        => $saleman_item,
+                        'combo_product'     => json_encode($combo_products),
+                        'commission'        => isset($commission_item->price) ? $commission_item->price * $item_quantity : 0,
+                    ];
+                    $text_items .=  $r+1 . "/ " . $item_name . "(".$item_code.")" ." | ". $item_quantity." | ".$this->bpas->formatDecimal($real_unit_price) ." | ". $pr_item_discount ." | ". $this->bpas->formatDecimal($subtotal)."\n";
+                    $products[] = ($product + $gst_data);
+                    $total += $this->bpas->formatDecimal(($item_net_price * $item_unit_quantity), 4);
+                }
+            }
+            if (empty($products)) {
+                $this->form_validation->set_rules('product', lang('order_items'), 'required');
+            } else {
+                krsort($products);
+            }
+            $order_discount = $this->site->calculateDiscount($this->input->post('order_discount'), ($total + $product_tax));
+            $total_discount = $this->bpas->formatDecimal(($order_discount + $product_discount), 4);
+            $order_tax      = $this->site->calculateOrderTax($this->input->post('order_tax'), ($total + $product_tax - $order_discount));
+            $total_tax      = $this->bpas->formatDecimal(($product_tax + $order_tax), 4);
+            $grand_total    = $this->bpas->formatDecimal(($total + $total_tax + $this->bpas->formatDecimal($shipping) - $order_discount + $this->bpas->formatDecimal($surcharge)), 4);
+            $saleman_award_points = 0;
+            $user  = $this->site->getUser($this->session->userdata('user_id'));
+            $staff = $this->site->getUser($this->input->post('saleman_by'));
+            if (!empty($staff) && $staff->save_point) {
+                if (!empty($this->Settings->each_sale)) {
+                    $saleman_award_points = floor(($grand_total / $this->Settings->each_sale) * $this->Settings->sa_point);
+                }
+            }
+            //=======acounting=========//
+            if ($this->Settings->module_account == 1) {
+                if ($order_discount != 0) {
+                    $accTrans[] = array(
+                        'tran_type'     => 'Sale',
+                        'tran_date'     => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_sale_discount,
+                        'amount'        => $order_discount,
+                        'narrative'     => 'Order Discount',
+                        'description'   => $note,
+                        'biller_id'     => $biller_id,
+                        'project_id'    => $project_id,
+                        'customer_id'   => $customer_id,
+                        'created_by'    => $this->session->userdata('user_id'),
+                    );
+                }
+                if ($order_tax != 0) {
+                    $accTrans[] = array(
+                        'tran_type'     => 'Sale',
+                        'tran_date'     => $date,
+                        'reference_no'  => $reference,
+                        'account_code'  => $this->accounting_setting->default_sale_tax,
+                        'amount'        => -$order_tax,
+                        'narrative'     => 'Order Tax',
+                        'description'   => $note,
+                        'biller_id'     => $biller_id,
+                        'project_id'    => $project_id,
+                        'customer_id'   => $customer_id,
+                        'created_by'    => $this->session->userdata('user_id'),
+                    );
+                }
+                if ($shipping != 0) {
+                    $accTrans[] = array(
+                        'tran_type'     => 'Sale',
+                        'tran_date'     => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_sale_freight,
+                        'amount'        => -$shipping,
+                        'narrative'     => 'Shipping',
+                        'description'   => $note,
+                        'biller_id'     => $biller_id,
+                        'project_id'    => $project_id,
+                        'customer_id'   => $customer_id,
+                        'created_by'    => $this->session->userdata('user_id'),
+                    );
+                }
+            }
+            //============end accounting=======//
+            $diagnosis = $this->input->post('diagnosis[]') ? implode(",", $this->input->post('diagnosis[]')) : null;
+            $data      = [
+                'date'                 => $date,
+                'project_id'           => $this->input->post('project'),
+                'from_id'              => $this->input->post('from'),
+                'time_out_id'          => $this->input->post('time_out'),
+                'destination_id'       => $this->input->post('destination'),
+                'so_id'                => $this->input->post('sale_order_id') ? $this->input->post('sale_order_id') : null,
+                'delivery_id'          => $this->input->post('delivery_id') ? $this->input->post('delivery_id') : null,
+                'reference_no'         => $reference,
+                'po_number'            => $this->input->post('po'),
+                'customer_id'          => $customer_id,
+                'customer'             => $customer,
+                'biller_id'            => $biller_id,
+                'biller'               => $biller,
+                'warehouse_id'         => $warehouse_id,
+                'note'                 => $note,
+                'staff_note'           => $staff_note,
+                'total'                => $total,
+                'product_discount'     => $product_discount,
+                'order_discount_id'    => $this->input->post('order_discount'),
+                'order_discount'       => $order_discount,
+                'total_discount'       => $total_discount,
+                'product_tax'          => $product_tax,
+                'order_tax_id'         => $this->input->post('order_tax'),
+                'order_tax'            => $order_tax,
+                'total_tax'            => $total_tax,
+                'shipping'             => $this->bpas->formatDecimal($shipping),
+                'grand_total'          => $grand_total,
+                'total_items'          => $total_items,
+                'sale_status'          => $sale_status,
+                'payment_status'       => $payment_status,
+                'payment_term'         => $payment_term,
+                'due_date'             => $due_date,
+                'paid'                 => 0, 
+                'created_by'           => $this->session->userdata('user_id'),
+                'hash'                 => hash('sha256', microtime() . mt_rand()),
+                'saleman_by'           => $this->input->post('saleman_by'),
+                'zone_id'              => $this->input->post('zone_id') ? $this->input->post('zone_id') : null,
+                'currency_rate_kh'     => !empty($this->bpas->getExchange_rate('KHR')) ? $this->bpas->getExchange_rate('KHR')->rate : 1,
+                'currency_rate_bat'    => !empty($this->bpas->getExchange_rate('THB')) ? $this->bpas->getExchange_rate('THB')->rate : 1,
+                'saleman_award_points' => (!empty($saleman_award_points) && !is_nan($saleman_award_points)) ? $saleman_award_points : 0,
+                'diagnosis_id'         => $diagnosis ? $diagnosis : null,
+                'patience_type'        => $this->input->post('patience_type'),
+                'bed_id'               => $this->input->post('bed'),
+                'surcharge'            => $this->bpas->formatDecimal($surcharge),
+            ];
+            $shipping_request = (isset($_POST['shipping_request']) && !empty($_POST['shipping_request']) ? intval($_POST['shipping_request']) : 0);
+            if ($shipping_request === 1) {
+                $data['shipping_request']         = $shipping_request;
+                $data['shipping_request_phone']   = $this->input->post('shipping_request_phone') ? strip_tags($this->input->post('shipping_request_phone')) : null;
+                $data['shipping_request_address'] = $this->input->post('shipping_request_address') ? strip_tags($this->input->post('shipping_request_address')) : null; 
+                $data['shipping_request_note']    = $this->input->post('shipping_request_note') ? strip_tags($this->input->post('shipping_request_note')) : null; 
+                $data['delivery_status']          = 'pending';
+            }
+            if ($payment_status == 'partial' || $payment_status == 'paid') {
+                if ($this->input->post('paid_by') == 'deposit') {
+                    if (!$this->site->check_customer_deposit($customer_id, $this->input->post('amount-paid'))) {
+                        $this->session->set_flashdata('error', lang('amount_greater_than_deposit'));
+                        redirect($_SERVER['HTTP_REFERER']);
+                    }
+                }
+                if ($this->input->post('paid_by') == 'gift_card') {
+                    $gc            = $this->site->getGiftCardByNO($this->input->post('gift_card_no'));
+                    $amount_paying = $grand_total >= $gc->balance ? $gc->balance : $grand_total;
+                    $gc_balance    = $gc->balance - $amount_paying;
+                    $payment       = [
+                        'date'         => $date,
+                        'reference_no' => $this->input->post('payment_reference_no'),
+                        'amount'       => $this->bpas->formatDecimal($amount_paying),
+                        'paid_by'      => $this->input->post('paid_by'),
+                        'cheque_no'    => $this->input->post('cheque_no'),
+                        'cc_no'        => $this->input->post('gift_card_no'),
+                        'cc_holder'    => $this->input->post('pcc_holder'),
+                        'cc_month'     => $this->input->post('pcc_month'),
+                        'cc_year'      => $this->input->post('pcc_year'),
+                        'cc_type'      => $this->input->post('pcc_type'),
+                        'created_by'   => $this->session->userdata('user_id'),
+                        'note'         => $this->input->post('payment_note'),
+                        'type'         => 'received',
+                        'gc_balance'   => $gc_balance,
+                    ];
+                } else {
+                    $payment = [
+                        'date'         => $date,
+                        'reference_no' => $this->input->post('payment_reference_no'),
+                        'amount'       => $this->bpas->formatDecimal($this->input->post('amount-paid')),
+                        'paid_by'      => $this->input->post('paid_by'),
+                        'cheque_no'    => $this->input->post('cheque_no'),
+                        'cc_no'        => $this->input->post('pcc_no'),
+                        'cc_holder'    => $this->input->post('pcc_holder'),
+                        'cc_month'     => $this->input->post('pcc_month'),
+                        'cc_year'      => $this->input->post('pcc_year'),
+                        'cc_type'      => $this->input->post('pcc_type'),
+                        'created_by'   => $this->session->userdata('user_id'),
+                        'note'         => $this->input->post('payment_note'),
+                        'type'         => 'received',
+                    ];
+                }
+                $amount_paying = $this->bpas->formatDecimal($this->input->post('amount-paid'));
+                //=====add accountig=====//
+                if ($this->Settings->module_account == 1) {
+                    if ($this->input->post('paid_by') == 'deposit') {
+                        $payment['bank_account'] = $this->accounting_setting->default_sale_deposit;
+                        $paying_to = $this->accounting_setting->default_sale_deposit;
+                    } else {
+                        $payment['bank_account'] = $this->input->post('bank_account');
+                        $paying_to = $this->input->post('bank_account');
+                    }
+                    if ($amount_paying < $grand_total) {
+                        $accTranPayments[] = array(
+                            'tran_type'     => 'Payment',
+                            'tran_date'     => $date,
+                            'reference_no'  => $this->input->post('payment_reference_no'),
+                            'account_code'  => $this->accounting_setting->default_receivable,
+                            'amount'        => ($grand_total - $amount_paying),
+                            'narrative'     => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                            'description'   => $this->input->post('payment_note'),
+                            'biller_id'     => $biller_id,
+                            'project_id'    => $project_id,
+                            'customer_id'   => $customer_id,
+                            'created_by'    => $this->session->userdata('user_id'),
+                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                        );
+                    }
+                    $accTranPayments[] = array(
+                        'tran_type'    => 'Payment',
+                        'tran_date'    => $date,
+                        'reference_no' => $this->input->post('payment_reference_no'),
+                        'account_code' => $paying_to,
+                        'amount'       => $amount_paying,
+                        'narrative'    => $this->site->getAccountName($paying_to),
+                        'description'  => $this->input->post('payment_note'),
+                        'biller_id'    => $biller_id,
+                        'project_id'   => $project_id,
+                        'customer_id'  => $customer_id,
+                        'created_by'   => $this->session->userdata('user_id'),
+                    );
+                }
+                //=====end accountig=====//
+            } else {
+                $accTranPayments = [];
+                $payment    = [];
+                $accTrans[] = array(
+                    'tran_type'     => 'Sale',
+                    'tran_date'     => $date,
+                    'reference_no'  => $reference,
+                    'account_code'  => $this->accounting_setting->default_receivable,
+                    'amount'        => $grand_total,
+                    'narrative'     => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                    'biller_id'     => $biller_id,
+                    'project_id'    => $project_id,
+                    'customer_id'   => $customer_id,
+                    'created_by'    => $this->session->userdata('user_id'),
+                    'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                );
+            }
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path']   = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size']      = $this->allowed_file_size;
+                $config['overwrite']     = false;
+                $config['encrypt_name']  = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                $photo              = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }      
+            $cus_sales = $this->sales_model->getSalesTotals($customer_id);
+            if (($customer_details->credit_limit != null) && (($cus_sales->total_amount - $cus_sales->paid) + $data['grand_total'] - (($payment_status == 'partial' || $payment_status == 'paid') ? $payment['amount'] : 0)) > $customer_details->credit_limit){
+                $this->session->set_flashdata('error', lang("customer_due_over_credit_amount"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->addSale($data, $products, $stockmoves, $payment, $si_return = array(), $accTrans, $accTranPayments, null, $commission_product)) {
+            $this->session->set_userdata('remove_slls', 1);
+            if ($quote_id) {
+                $this->db->update('quotes', ['status' => 'completed'], ['id' => $quote_id]);
+            }
+            if ($sale_order_id) {
+                $status = 'completed';
+                $sale_order_id    = $this->input->post('sale_order_id');
+                $sale_items       = $this->site->getSaleItemsBySaleOrderID($sale_order_id);
+                $sale_order_items = $this->site->getSaleOrderItemsBySaleID($sale_order_id);
+                foreach ($sale_order_items as $item) {
+                    $key = array_search($item->product_code, array_column($sale_items, 'product_code'));
+                    if ($key !== false) {
+                        if ($item->quantity > $sale_items[$key]->quantity) {
+                            $status = 'partial';
+                            break;
+                        }
+                    } else {
+                        $status = 'partial';
+                        break;
+                    }
+                }
+                $this->db->update('sales_order', array('sale_status' => $status), array('id' => $sale_order_id));
+            }
+            if ($delivery_id) {
+                $status           = 'completed';
+                $delivery_id      = $this->input->post('delivery_id');
+                $delivery         = $this->deliveries_model->getDeliveryByID($delivery_id);
+                if (!empty($delivery->sale_order_id)) {
+                    $sale_items       = $this->site->getSaleItemsByDeliverySaleOrderID($delivery->sale_order_id);
+                    $sale_order_items = $this->site->getSaleOrderItemsBySaleID($delivery->sale_order_id);
+                    foreach($sale_order_items as $item){
+                        $key = array_search($item->product_code, array_column($sale_items, 'product_code'));
+                        if($key !== false){
+                            if($item->quantity > $sale_items[$key]->quantity){
+                                $status = 'partial';
+                                break;
+                            }
+                        } else {
+                            $status = 'partial';
+                            break;
+                        }
+                    }
+                    $this->db->update('sales_order', array('sale_status' => $status), array('id' => $delivery->sale_order_id));
+                }
+            }
+            if ($prescription_id) {
+                $this->db->update('prescription', ['sale_status' => 'completed'], ['id' => $prescription_id]);
+            }
+            $this->session->set_flashdata('message', lang('sale_added'));
+            admin_redirect('sales');
+        } else {
+            $consignment_id = $this->input->get('consignment_id');
+
+            if ($quote_id || $sale_id || $sale_order_id || $delivery_id || $prescription_id || $consignment_id) {
+
+                if ($quote_id) {
+
+                    $getSaleslist        = $this->quotes_model->getQuoteByID($quote_id);
+                    $items               = $this->quotes_model->getAllQuoteItems($quote_id);
+                    $sale_items          = [];
+                    $q_id                = $quote_id;
+                } elseif ($sale_order_id) {
+                    $getSaleslist        = $this->sales_order_model->getInvoiceByID($sale_order_id);
+                    $items               = $this->sales_order_model->getAllInvoiceItems($sale_order_id);
+                    $sale_items          = $this->site->getSaleItemsBySaleOrderID($sale_order_id);
+                    $q_id                = $sale_order_id;
+                } elseif ($sale_id) {
+                    $getSaleslist        = $this->sales_model->getInvoiceByID($sale_id);
+                    $items               = $this->sales_model->getAllInvoiceItems($sale_id);
+                    $sale_items          = [];
+                    $q_id                = $sale_id;
+                } elseif ($delivery_id) {
+                    $delivery            = $this->deliveries_model->getDeliveryByID($delivery_id);
+                    $getSaleslist        = $this->sales_order_model->getInvoiceByID($delivery->sale_order_id);
+                    $items               = $this->deliveries_model->getAllDeliveryItems($delivery_id);
+                    $sale_items          = [];
+                    $q_id                = $delivery_id;
+                } elseif ($prescription_id) {
+                    $getSaleslist        = $this->sales_model->getPrescriptionByID($prescription_id);
+                    $items               = $this->sales_model->getPrescriptionItems($prescription_id);
+                    $sale_items          = [];
+                    $q_id                = $prescription_id;
+                }elseif($consignment_id > 0){
+
+                    $quote_id = $consignment_id;
+                    $this->data['consignment_id'] = $consignment_id;
+                    $consignment = $this->sales_model->getConsignmentByID($consignment_id);
+                    if($consignment->status=="completed"){
+                        $this->session->set_flashdata('error', lang("consignment_is_already_completed"));
+                        admin_redirect('products/consignments');
+                    }
+                    $getSaleslist = $consignment;
+                    $items = $this->sales_model->getConsigmentItems($consignment_id);
+                    $q_id                = $consignment_id;
+                    $sale_items          = [];
+                }
+                krsort($items);
+                $c = rand(100000, 9999999);
+              
+                foreach ($items as $item) {
+                    $b = false;
+                    if (!$sale_id) {
+                        if ($sale_items !== false) {
+                            $key = array_search($item->product_code, array_column($sale_items, 'product_code'));
+                            if ($key !== false) {
+                                if ($item->unit_quantity > $sale_items[$key]->quantity) {
+                                    $item->unit_quantity = $item->unit_quantity - $sale_items[$key]->quantity;
+                                } else {
+                                    $b = true;
+                                }
+                            } 
+                        }
+                        if ($b == true) {
+                            continue;
+                        }
+                    }
+                    $row = $this->site->getProductByID($item->product_id);
+                    if (!$row) {
+                        $row             = json_decode('{}');
+                        $row->tax_method = 0;
+                    } else {
+                        unset($row->cost, $row->details, $row->product_details, $row->image, $row->barcode_symbology, $row->cf1, $row->cf2, $row->cf3, $row->cf4, $row->cf5, $row->cf6, $row->supplier1price, $row->supplier2price, $row->cfsupplier3price, $row->supplier4price, $row->supplier5price, $row->supplier1, $row->supplier2, $row->supplier3, $row->supplier4, $row->supplier5, $row->supplier1_part_no, $row->supplier2_part_no, $row->supplier3_part_no, $row->supplier4_part_no, $row->supplier5_part_no);
+                    }
+                    $row->quantity = 0;
+                    $pis = $this->site->getStockMovement_ProductBalanceQuantity($item->product_id, $item->warehouse_id, $item->option_id);
+                    if ($pis) {
+                        $row->quantity = $pis->quantity_balance;
+                    }
+                    $row->id              = $item->product_id;
+                    $row->code            = $item->product_code;
+                    $row->name            = $item->product_name;
+                    $row->type            = $item->product_type;
+                    $row->qty             = $item->quantity;
+                    $row->base_quantity   = $item->quantity;
+                    $row->base_unit       = isset($row->unit) ? $row->unit : $item->product_unit_id;
+                    $row->base_unit_price = isset($row->price) ? $row->price : $item->unit_price;
+                    $row->unit            = $item->product_unit_id;
+                    $row->qty             = $item->unit_quantity;
+                    $row->discount        = isset($item->discount)?$item->discount:'0';
+                    $row->item_tax        = $item->item_tax > 0 ? $item->item_tax / $item->quantity : 0;
+                    $row->item_discount   = $item->item_discount > 0 ? $item->item_discount / $item->quantity : 0;
+                    $row->price           = $this->bpas->formatDecimal($item->net_unit_price + $this->bpas->formatDecimal($row->item_discount));
+                    $row->unit_price      = $row->tax_method ? $item->unit_price + $this->bpas->formatDecimal($row->item_discount) + $this->bpas->formatDecimal($row->item_tax) : $item->unit_price + ($row->item_discount);
+                    $row->real_unit_price = $item->real_unit_price;
+                    $row->tax_rate        = isset($item->tax_rate_id)?$item->tax_rate_id:NULL;
+                    $row->serial          = '';
+                    $row->serial_no       = (isset($row->serial_no) ? $row->serial_no : '');
+                    $row->option          = $item->option_id;
+                    $row->expiry          = $item->expiry;
+                    $row->details         = (isset($item->comment) ? $item->comment : '');
+                    $options              = $this->sales_model->getProductOptions($row->id, $item->warehouse_id);
+                    $combo_items          = $row->type == 'combo' ? $this->sales_model->getProductComboItems($row->id, $item->warehouse_id) : false;
+                    $units                = $this->site->getUnitsByBUID($row->base_unit);
+                    $tax_rate             = $this->site->getTaxRateByID($row->tax_rate);
+                    $ri                   = $this->Settings->item_addition ? $row->id : $c;
+                    $set_price            = $this->site->getUnitByProId($row->id);
+                    $stock_items          = $this->site->getStockMovementByProductID($row->id, $item->warehouse_id, $row->option);
+                    if ($quote_id || $sale_id || $sale_order_id) {
+                        if (!empty($set_price)) {
+                            foreach ($set_price as $key => $p) {
+                                if ($p->unit_id == $row->unit) {
+                                    $set_price[$key]->price = $row->real_unit_price;
+                                }
+                            }
+                        }
+                    }
+                    $pr[$ri] = [
+                        'id' => $ri, 'item_id' => $row->id, 'label'    => $row->name . ' (' . $row->code . ')' . ($row->expiry != null ? ' (' . $row->expiry . ')' : ''),
+                        'category' => $row->category_id, 'row'=> $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 'units' => $units, 'set_price' => $set_price, 'options' => $options, 'pitems' => $stock_items, 'expiry' => $row->expiry 
+                    ];
+                    $c++;
+                }
+                $this->data['quote_items'] = json_encode($pr);
+                $this->data['quote']       = $getSaleslist;
+                $this->data['inv']         = $getSaleslist;
+                $this->data['quote_id']    = $q_id;
+            }
+            $this->data['projects']        = $this->site->getAllProject();
+            $this->data['error']           = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['sale_order_id']   = $sale_order_id;
+            $this->data['delivery_id']     = $delivery_id;
+            $this->data['prescription_id'] = $prescription_id;
+            $this->data['billers']         = $this->site->getAllCompanies('biller');
+            $this->data['data']            = $this->site->getBillerByUser($this->session->userdata('user_id'));
+            $this->data['mbillers']        = $this->site->getAllCompaniesByBiller('biller', explode(',', $this->data['data']->multi_biller));
+            $this->data['agencies']        = $this->site->getAllUsers();
+            $this->data['payment_term']    = $this->site->getAllPaymentTerm();
+            $this->data['warehouses']      = $this->site->getAllWarehouses();
+            $this->data['tax_rates']       = $this->site->getAllTaxRates();
+            $this->data['units']           = $this->site->getAllBaseUnits();
+            $this->data['zones']           = $this->site->getAllZones();
+            $this->data['group_price']     = json_encode($this->site->getAllGroupPrice());
+            $this->data['salemans']        = $this->site->getAllSalemans($this->Settings->group_saleman_id);
+            $this->data['slnumber']        = $this->site->getReference('so');
+            $this->data['sltaxnumber']     = $this->site->getReference('st');
+            $this->data['payment_ref']     = ''; //$this->site->getReference('pay');
+            if (isset($this->data['quote']) && !empty($this->data['quote']->bed_id)) {
+                $q_table = $this->table_model->getSuspend_NoteByID($this->data['quote']->bed_id);
+                $this->data['quote']->bed_price = $q_table[0]->price;
+            }
+            $this->data['tables'] = array_merge($this->table_model->getsuspend_note(), ((isset($q_table) && !empty($q_table)) ? $q_table : []));
+            $user = $this->site->getUser($this->session->userdata('user_id'));
+            if ($this->Settings->multi_biller) {
+                $this->data['user_billers'] = $user->multi_biller ? explode(',', $user->multi_biller) : null;
+            } else {
+                $this->data['user_billers'] = $user->biller_id ? ((array) $user->biller_id) : null;
+            }
+            $this->data['count']            = explode(',', $this->session->userdata('warehouse_id'));
+            $this->data['user_warehouses']  = $user->warehouse_id ? explode(',', $user->warehouse_id) : null;
+            $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('add_sale')]];
+            $meta = ['page_title' => lang('add_sale'), 'bc' => $bc];
+            $this->page_construct('sales/add', $meta, $this->data);
+        }
+    }
+
+    public function edit($id = null)
+    {
+        /*$rsale = $this->sales_model->getEditSaleRequestBySaleID($id);
+        if ($rsale == false) {  
+            $this->bpas->checkPermissions();
+        } else {
+            if ($rsale->status != "approved") { 
+                $this->bpas->checkPermissions();
+            }
+        }*/
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $inv = $this->sales_model->getInvoiceByID($id);
+        if ($inv->sale_status == 'returned' || $inv->return_id || $inv->return_sale_ref) {
+            $this->session->set_flashdata('error', lang('sale_x_action'));
+            admin_redirect(isset($_SERVER['HTTP_REFERER']) ? $_SERVER['HTTP_REFERER'] : 'welcome');
+        }
+        if (!$this->session->userdata('edit_right')) {
+            $this->bpas->view_rights($inv->saleman_by);
+        }
+        $this->form_validation->set_message('is_natural_no_zero', lang('no_zero_required'));
+        $this->form_validation->set_rules('reference_no', lang('reference_no'), 'required');
+        $this->form_validation->set_rules('customer', lang('customer'), 'required');
+        $this->form_validation->set_rules('biller', lang('biller'), 'required');
+        $this->form_validation->set_rules('sale_status', lang('sale_status'), 'required');
+        $this->form_validation->set_rules('payment_status', lang('payment_status'), 'required');
+        if ($this->form_validation->run() == true) {
+            $reference = $this->input->post('reference_no');
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = $inv->date;
+            }
+            $project_id             = $this->input->post('project') ? $this->input->post('project') : $this->Settings->default_project;
+            $warehouse_id           = $this->input->post('warehouse');
+            $customer_id            = $this->input->post('customer');
+            $biller_id              = $this->input->post('biller');
+            $total_items            = $this->input->post('total_items');
+            $sale_status            = $this->input->post('sale_status');
+            $payment_status         = $this->input->post('payment_status');
+            $payment_term           = $this->input->post('payment_term');
+            $payment_term_details   = $this->site->getAllPaymentTermByID($payment_term);
+            if ($this->Settings->payment_term) {
+                $due_date           = $payment_term ? date('Y-m-d', strtotime('+' . $payment_term . ' days', strtotime($date))) : null;
+            } else {
+                $due_date           = (isset($payment_term_details[0]->id)? date('Y-m-d', strtotime($date . '+' . $payment_term_details[0]->due_day . ' days')) : NULL);
+            }
+            $shipping               = $this->input->post('shipping') ? $this->input->post('shipping') : 0;
+            $customer_details       = $this->site->getCompanyByID($customer_id);
+            $customer               = !empty($customer_details->company) && $customer_details->company != '-' ? $customer_details->company.'/'.$customer_details->name : $customer_details->name;
+            $biller_details         = $this->site->getCompanyByID($biller_id);
+            $biller                 = !empty($biller_details->company) && $biller_details->company != '-' ? $biller_details->company.'/'.$biller_details->name : $biller_details->name;
+            $note                   = $this->bpas->clear_tags($this->input->post('note'));
+            $staff_note             = $this->bpas->clear_tags($this->input->post('staff_note'));
+            $commission_product     = 0;
+            $total                  = 0;
+            $product_tax            = 0;
+            $product_discount       = 0;
+            $stockmoves             = null;
+            $gst_data               = [];
+            $total_cgst             = $total_sgst       = $total_igst       = 0;
+            $i                      = isset($_POST['product_code']) ? sizeof($_POST['product_code']) : 0;
+            for ($r = 0; $r < $i; $r++) {
+                $item_id            = $_POST['product_id'][$r];
+                $item_type          = $_POST['product_type'][$r];
+                $item_code          = $_POST['product_code'][$r];
+                $item_name          = $_POST['product_name'][$r];
+                $real_unit_price    = $this->bpas->formatDecimal($_POST['real_unit_price'][$r]);
+                $unit_price         = $this->bpas->formatDecimal($_POST['unit_price'][$r]);
+                $item_unit_quantity = $_POST['quantity'][$r];
+                $item_serial        = isset($_POST['serial'][$r]) ? $_POST['serial'][$r] : null;
+                $item_max_serial    = isset($_POST['max_serial'][$r]) ? $_POST['max_serial'][$r] : '';
+                $item_tax_rate      = isset($_POST['product_tax'][$r]) ? $_POST['product_tax'][$r] : null;
+                $item_discount      = isset($_POST['product_discount'][$r]) ? $_POST['product_discount'][$r] : null;
+                $item_unit          = $_POST['product_unit'][$r];
+                $item_quantity      = $_POST['product_base_quantity'][$r];
+                $item_addition_type = isset($_POST['addition_type'][$r]) ? $_POST['addition_type'][$r] :'';
+                $item_warranty      = isset($_POST['warranty'][$r]) ? $_POST['warranty'][$r] :'';
+                $item_option        = isset($_POST['product_option'][$r]) && !empty($_POST['product_option'][$r]) && $_POST['product_option'][$r] != 'false' && $_POST['product_option'][$r] != 'undefined' && $_POST['product_option'][$r] != 'null' && $_POST['product_option'][$r] != 'NULL' ? $_POST['product_option'][$r] : null;
+                $item_expiry        = isset($_POST['product_expiry'][$r]) && !empty($_POST['product_expiry'][$r]) && $_POST['product_expiry'][$r] != 'false' && $_POST['product_expiry'][$r] != 'undefined' && $_POST['product_expiry'][$r] != 'null' && $_POST['product_expiry'][$r] != 'NULL' && $_POST['product_expiry'][$r] != '00/00/0000' && $_POST['product_expiry'][$r] != '' ? $_POST['product_expiry'][$r] : null; 
+                $item_detail        = isset($_POST['product_detail'][$r]) ? $_POST['product_detail'][$r] : '';
+                $saleman_item       = isset($_POST['saleman_item'][$r]) ? $_POST['saleman_item'][$r] : '';
+                if (isset($item_code) && isset($real_unit_price) && isset($unit_price) && isset($item_quantity)) {
+                    $product_details = $item_type != 'manual' ? $this->sales_model->getProductByID($item_id) : null; 
+                    $cost = $product_details ? $product_details->cost : 0;
+                    if ($item_type == 'digital') {
+                        $digital = true;
+                    } 
+                    $pr_discount      = $this->site->calculateDiscount($item_discount, $unit_price);
+                    $unit_price       = $this->bpas->formatDecimal($unit_price - $pr_discount);
+                    $item_net_price   = $unit_price;
+                    $pr_item_discount = $this->bpas->formatDecimal($pr_discount * $item_unit_quantity);
+                    $product_discount += $pr_item_discount;
+                    $pr_item_tax = $item_tax = 0;
+                    $tax         = ''; 
+                    if (isset($item_tax_rate) && $item_tax_rate != 0) {
+                        $tax_details = $this->site->getTaxRateByID($item_tax_rate);
+                        $ctax        = $this->site->calculateTax($product_details, $tax_details, $unit_price);
+                        $item_tax    = $ctax['amount'];
+                        $tax         = $ctax['tax'];
+                        if (!$product_details || (!empty($product_details) && $product_details->tax_method != 1)) {
+                            $item_net_price = $unit_price - $item_tax;
+                        }
+                        $pr_item_tax = $this->bpas->formatDecimal(($item_tax * $item_unit_quantity), 4);
+                    } 
+                    $product_tax       += $pr_item_tax;
+                    $subtotal           = (($item_net_price * $item_unit_quantity) + $pr_item_tax);
+                    $unit               = $this->site->getUnitByID($item_unit);
+                    $commission_item    = $this->site->getProductCommissionByID($item_id);
+                    $commission_product += isset($commission_item->price) ? ($commission_item->price * $item_quantity) : 0;
+                    $purchase_unit_cost = $product_details->cost;
+                    if ($unit->id != $product_details->unit) {
+                        $cost =$this->site->convertCostingToBase($purchase_unit_cost,$unit);
+                    } else {
+                        $cost = $cost;
+                    }
+                    $combo_products = json_decode($_POST['product_combo'][$r]);
+                    if ($product_details->type == 'combo' && $combo_products) {
+                        $price_combo = 0;
+                        $qty_combo   = count($combo_products);
+                        $dicount     = 0;
+                        foreach ($combo_products as $combo_product) {
+                            $price_combo += $combo_product->price * $combo_product->qty;
+                        }
+                        if ($this->bpas->formatDecimal($price_combo) <> $this->bpas->formatDecimal($item_net_price)) {
+                            $dicount = (($price_combo - $item_net_price) * 100) / $price_combo;
+                        }
+                        $product_combo_cost = 0;
+                        foreach ($combo_products as $combo_product) {
+                            $combo_id    = $combo_product->id;
+                            $combo_code  = $combo_product->code;
+                            $combo_name  = $combo_product->name;
+                            $combo_qty   = $combo_product->qty * $item_quantity;
+                            $combo_price = $combo_product->price;
+                            if ($dicount > 0) {
+                                $combo_price = $combo_price - (($combo_price * $dicount) / 100);
+                            } else if ($dicount < 0) {
+                                $combo_price = $combo_price + (($combo_price * abs($dicount)) / 100);
+                            }
+                            if ($price_combo == 0 && $item_net_price > 0) {
+                                $combo_price = $item_net_price / $qty_combo;
+                            }
+                            $combo_detail = $this->site->getProductByID($combo_id);
+                            if ($combo_detail) {
+                                $combo_unit = $this->site->getProductUnit($combo_id, $combo_detail->unit);
+                                if ($this->Settings->accounting_method == '0') {
+                                    $costs = $this->site->getFifoCost($combo_id, $combo_qty, $stockmoves);
+                                } else if ($this->Settings->accounting_method == '1') {
+                                    $costs = $this->site->getLifoCost($combo_id, $combo_qty, $stockmoves);
+                                } else if ($this->Settings->accounting_method == '3') {
+                                    $costs = $this->site->getProductMethod($combo_id, $combo_qty, $stockmoves);
+                                }
+                                if (isset($costs) && $costs) {
+                                    $item_cost_qty   = 0;
+                                    $item_cost_total = 0;
+                                    $item_costs      = '';
+                                    foreach ($costs as $cost_item) {
+                                        $item_cost_qty   += $cost_item['quantity'];
+                                        $item_cost_total += $cost_item['cost'] * $cost_item['quantity'];
+                                        $stockmoves[] = array(
+                                            'transaction'    => 'Sale',
+                                            'transaction_id' => $id,
+                                            'product_id'     => $combo_detail->id,
+                                            'product_type'   => $combo_detail->type,
+                                            'product_code'   => $combo_detail->code,
+                                            'product_name'   => $combo_detail->name,
+                                            'quantity'       => $cost_item['quantity'] * (-1),
+                                            'expiry'         => $item_expiry,
+                                            'unit_quantity'  => $combo_unit->unit_qty,
+                                            'unit_code'      => $combo_unit->code,
+                                            'unit_id'        => $combo_detail->unit,
+                                            'warehouse_id'   => $warehouse_id,
+                                            'date'           => $date,
+                                            'real_unit_cost' => $cost_item['cost'],
+                                            'reference_no'   => $reference,
+                                            'user_id'        => $this->session->userdata('user_id'),
+                                        );
+                                        //========accounting=========//
+                                        if ($this->Settings->module_account == 1 && ($sale_status == 'completed' || $sale_status == 'consignment')) {
+                                            $accTrans[] = array(
+                                                'tran_type'     => 'Sale',
+                                                'tran_no'       => $id,
+                                                'tran_date'     => $date,
+                                                'reference_no'  => $reference,
+                                                'account_code'  => $this->accounting_setting->default_stock,
+                                                'amount'        => -($cost_item['cost'] * $cost_item['quantity']),
+                                                'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                                'description'   => $note,
+                                                'biller_id'     => $biller_id,
+                                                'project_id'    => $project_id,
+                                                'customer_id'   => $customer_id,
+                                                'created_by'    => $this->session->userdata('user_id'),
+                                            );
+                                            $accTrans[] = array(
+                                                'tran_type'     => 'Sale',
+                                                'tran_no'       => $id,
+                                                'tran_date'     => $date,
+                                                'reference_no'  => $reference,
+                                                'account_code'  => $this->accounting_setting->default_cost,
+                                                'amount'        => ($cost_item['cost'] * $cost_item['quantity']),
+                                                'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                                'description'   => $note,
+                                                'biller_id'     => $biller_id,
+                                                'project_id'    => $project_id,
+                                                'customer_id'   => $customer_id,
+                                                'created_by'    => $this->session->userdata('user_id'),
+                                                'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost)
+                                            );
+                                        }
+                                        //============end accounting=======//
+                                        $item_costs .= '#' . $cost_item['cost'] . '=' . $cost_item['quantity'];
+                                    }
+                                    $productAcc   = $this->site->getProductAccByProductId($combo_id);
+                                    $default_sale = ($combo_detail->type == 'standard') ? $this->accounting_setting->default_sale : $this->accounting_setting->other_income;
+
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_no'       => $id,
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $default_sale,
+                                        'amount'        => -($combo_price * $combo_qty),
+                                        'narrative'     => $this->site->getAccountName($default_sale),
+                                        'description'   => $note,
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'customer_id'   => $customer_id,
+                                        'created_by'    => $this->session->userdata('user_id'),
+                                    );
+                                    $product_combo_cost += ($item_cost_total / $item_cost_qty);
+                                } else {
+                                    $product_combo_cost += ($combo_qty * $combo_detail->cost);
+                                    $stockmoves[] = array(
+                                        'transaction'    => 'Sale',
+                                        'transaction_id' => $id,
+                                        'product_id'     => $combo_detail->id,
+                                        'product_type'   => $combo_detail->type,
+                                        'product_code'   => $combo_detail->code,
+                                        'product_name'   => $combo_detail->name,
+                                        'quantity'       => $combo_qty * -1,
+                                        'unit_quantity'  => $combo_unit->unit_qty,
+                                        'expiry'         => $item_expiry,
+                                        'unit_code'      => $combo_unit->code,
+                                        'unit_id'        => $combo_detail->unit,
+                                        'warehouse_id'   => $warehouse_id,
+                                        'date'           => $date,
+                                        'real_unit_cost' => $combo_detail->cost,
+                                        'reference_no'   => $reference,
+                                        'user_id'        => $this->session->userdata('user_id'),
+                                    );
+                                    //=======accounting=========//
+                                    if ($this->Settings->module_account == 1 && ($sale_status == 'completed' || $sale_status == 'consignment')) {
+                                        $productAcc   = $this->site->getProductAccByProductId($combo_detail->id);
+                                        $default_sale = ($item_type == 'standard') ? $this->accounting_setting->default_sale : $this->accounting_setting->other_income;
+                                        $accTrans[] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_no'       => $id,
+                                            'tran_date'     => $date,
+                                            'reference_no'  => $reference,
+                                            'account_code'  => $this->accounting_setting->default_stock,
+                                            'amount'        => -($combo_detail->cost * $combo_qty),
+                                            'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                            'description'   => $note,
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'customer_id'   => $customer_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                        );
+                                        $accTrans[] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_no'       => $id,
+                                            'tran_date'     => $date,
+                                            'reference_no'  => $reference,
+                                            'account_code'  => $this->accounting_setting->default_cost,
+                                            'amount'        => ($combo_detail->cost * $combo_qty),
+                                            'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                            'description'   => $note,
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'customer_id'   => $customer_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost)
+                                        );
+                                        $accTrans[] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_no'       => $id,
+                                            'tran_date'     => $date,
+                                            'reference_no'  => $reference,
+                                            'account_code'  => $default_sale,
+                                            'amount'        => -($combo_price * $combo_qty),
+                                            'narrative'     => $this->site->getAccountName($default_sale),
+                                            'description'   => $note,
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'customer_id'   => $customer_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                        );
+                                    }
+                                    //============end accounting=======//
+                                }
+                                $raw_materials[] = array(
+                                    "product_id" => $combo_detail->id,
+                                    "quantity" => $combo_qty
+                                );
+                            }
+                        }
+                        $cost  = $product_combo_cost;
+                    } else {
+                        if ($this->Settings->accounting_method == '0') {
+                            $costs = $this->site->getFifoCost($item_id, $item_quantity, $stockmoves, 'Sale', $id);
+                        } else if ($this->Settings->accounting_method == '1') {
+                            $costs = $this->site->getLifoCost($item_id, $item_quantity, $stockmoves, 'Sale', $id);;
+                        } else if ($this->Settings->accounting_method == '3') {
+                            $costs = $this->site->getProductMethod($item_id, $item_quantity, $stockmoves, 'Sale', $id);;
+                        }
+                        if (isset($costs) && $costs && $item_quantity > 0) {
+                            $item_cost_qty   = 0;
+                            $item_cost_total = 0;
+                            $item_costs      = '';
+                            foreach ($costs as $cost_item) {
+                                $item_cost_qty   += $cost_item['quantity'];
+                                $item_cost_total += $cost_item['cost'] * $cost_item['quantity'];
+                                $stockmoves[] = array(
+                                    'transaction'    => 'Sale',
+                                    'transaction_id' => $id,
+                                    'product_id'     => $item_id,
+                                    'product_type'   => $item_type,
+                                    'product_code'   => $item_code,
+                                    'product_name'   => $item_name,
+                                    'option_id'      => $item_option,
+                                    'quantity'       => $cost_item['quantity'] * (-1),
+                                    'unit_quantity'  => !empty($unit->operation_value) ? $unit->operation_value : 1,
+                                    'expiry'         => $item_expiry,
+                                    'unit_code'      => $unit->code,
+                                    'unit_id'        => $item_unit,
+                                    'warehouse_id'   => $warehouse_id,
+                                    'date'           => $date,
+                                    'real_unit_cost' => $cost_item['cost'],
+                                    'serial_no'      => $item_serial,
+                                    'reference_no'   => $reference,
+                                    'user_id'        => $this->session->userdata('user_id'),
+                                );
+                                //========accounting=========//
+                                if ($this->Settings->module_account == 1 && $item_type != 'manual' && ($sale_status == 'completed' || $sale_status == 'consignment')) {
+                                    $productAcc = $this->site->getProductAccByProductId($item_id);
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_no'       => $id,
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $this->accounting_setting->default_stock,
+                                        'amount'        => -($cost_item['cost'] * $cost_item['quantity']),
+                                        'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                        'description'   => $note,
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'customer_id'   => $customer_id,
+                                        'created_by'    => $this->session->userdata('user_id'),
+                                    );
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_no'       => $id,
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $this->accounting_setting->default_cost,
+                                        'amount'        => ($cost_item['cost'] * $cost_item['quantity']),
+                                        'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                        'description'   => $note,
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'customer_id'   => $customer_id,
+                                        'created_by'    => $this->session->userdata('user_id'),
+                                        'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost)
+                                    );
+                                }
+                                //============end accounting=======//
+                                $item_costs .= '#' . $cost_item['cost'] . '=' . $cost_item['quantity'];
+                            }
+                            $cost = $item_cost_total / $item_cost_qty;
+                        } else {
+                            $stockmoves[] = array(
+                                'transaction'    => 'Sale',
+                                'transaction_id' => $id,
+                                'product_id'     => $item_id,
+                                'product_type'   => $item_type,
+                                'product_code'   => $item_code,
+                                'product_name'   => $item_name,
+                                'option_id'      => $item_option,
+                                'quantity'       => $item_quantity * (-1),
+                                'unit_quantity'  => !empty($unit->operation_value) ? $unit->operation_value : 1,
+                                'expiry'         => $item_expiry,
+                                'unit_code'      => $unit->code,
+                                'unit_id'        => $item_unit,
+                                'warehouse_id'   => $warehouse_id,
+                                'date'           => $date,
+                                'real_unit_cost' => ($item_quantity < 0 ? (($item_net_price + $item_tax) / (!empty($unit->operation_value) ? $unit->operation_value : 1)) : $cost),
+                                'serial_no'      => $item_serial,
+                                'reference_no'   => $reference,
+                                'user_id'        => $this->session->userdata('user_id'),
+                            );
+                            //========accounting=========//
+                            if ($this->Settings->module_account == 1 && $item_type != 'manual' && ($sale_status == 'completed' || $sale_status == 'consignment')) {
+                                $productAcc = $this->site->getProductAccByProductId($item_id);
+                                $accTrans[] = array(
+                                    'tran_type'     => 'Sale',
+                                    'tran_no'       => $id,
+                                    'tran_date'     => $date,
+                                    'reference_no'  => $reference,
+                                    'account_code'  => $this->accounting_setting->default_stock,
+                                    'amount'        => -($cost * $item_unit_quantity),
+                                    'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                    'description'   => $note,
+                                    'biller_id'     => $biller_id,
+                                    'project_id'    => $project_id,
+                                    'customer_id'   => $customer_id,
+                                    'created_by'    => $this->session->userdata('user_id'),
+                                );
+                                $accTrans[] = array(
+                                    'tran_type'     => 'Sale',
+                                    'tran_no'       => $id,
+                                    'tran_date'     => $date,
+                                    'reference_no'  => $reference,
+                                    'account_code'  => $this->accounting_setting->default_cost,
+                                    'amount'        => ($cost * $item_unit_quantity),
+                                    'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                    'description'   => $note,
+                                    'biller_id'     => $biller_id,
+                                    'project_id'    => $project_id,
+                                    'customer_id'   => $customer_id,
+                                    'created_by'    => $this->session->userdata('user_id'),
+                                    'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost)
+                                );
+                            }
+                            //============end accounting=======//
+                        }
+                    }
+                    if ($this->Settings->module_account == 1) {
+                        $getproduct    = $this->site->getProductByID($item_id);
+                        $default_sale  = ($item_type == 'standard') ? $this->accounting_setting->default_sale : $this->accounting_setting->other_income;
+                    
+
+                        $inventory_acc = $this->accounting_setting->default_stock;
+                        $costing_acc   = $this->accounting_setting->default_cost;        
+                        $product_tax   = $this->bpas->formatDecimal($product_tax);
+                        if ($product_details->type != 'combo') {
+                            $accTrans[] = array(
+                                'tran_type'     => 'Sale',
+                                'tran_no'       => $id,
+                                'tran_date'     => $date,
+                                'reference_no'  => $reference,
+                                'account_code'  => $default_sale,
+                                'amount'        => -($product_tax >0 ? ($subtotal-$product_tax) : $subtotal),
+                                'narrative'     => $this->site->getAccountName($default_sale),
+                                'description'   => $note,
+                                'biller_id'     => $biller_id,
+                                'project_id'    => $project_id,
+                                'customer_id'   => $customer_id,
+                                'created_by'    => $this->session->userdata('user_id'),
+                            );
+                        }
+                        if ($product_tax > 0) {
+                            $accTrans[] = array(
+                                'tran_type'     => 'Sale',
+                                'tran_no'       => $id,
+                                'tran_date'     => $date,
+                                'reference_no'  => $reference,
+                                'account_code'  => $this->accounting_setting->default_sale_tax,
+                                'amount'        => -($product_tax),
+                                'narrative'     => $this->site->getAccountName($this->accounting_setting->default_sale_tax),
+                                'description'   => $note,
+                                'biller_id'     => $biller_id,
+                                'project_id'    => $project_id,
+                                'customer_id'   => $customer_id,
+                                'created_by'    => $this->session->userdata('user_id'),
+                            );
+                        }
+                    }
+                    $product = [
+                        'product_id'        => $item_id,
+                        'product_code'      => $item_code,
+                        'product_name'      => $item_name,
+                        'product_type'      => $item_type,
+                        'option_id'         => $item_option,
+                        'cost'              => $cost,
+                        'purchase_unit_cost'=> $purchase_unit_cost ? $purchase_unit_cost : NULL,
+                        'net_unit_price'    => $item_net_price,
+                        'unit_price'        => $this->bpas->formatDecimal($item_net_price + $item_tax),
+                        'quantity'          => $item_quantity,
+                        'product_unit_id'   => $unit ? $unit->id : null,
+                        'product_unit_code' => $unit ? $unit->code : null,
+                        'unit_quantity'     => $item_unit_quantity,
+                        'warehouse_id'      => $warehouse_id,
+                        'item_tax'          => $pr_item_tax,
+                        'tax_rate_id'       => $item_tax_rate,
+                        'tax'               => $tax,
+                        'discount'          => $item_discount,
+                        'item_discount'     => $pr_item_discount,
+                        'expiry'            => $item_expiry,
+                        'subtotal'          => $this->bpas->formatDecimal($subtotal),
+                        'serial_no'         => $item_serial,
+                        'max_serial'        => $item_max_serial,
+                        'real_unit_price'   => $real_unit_price,
+                        'addition_type'     => $item_addition_type,
+                        'warranty'          => $item_warranty,
+                        'comment'           => $item_detail,
+                        'saleman_by'        => $saleman_item,
+                        'combo_product'     => json_encode($combo_products),
+                        'commission'        => isset($commission_item->price) ? ($commission_item->price * $item_quantity) : 0,
+                    ];
+                    $products[] = ($product + $gst_data);
+                    $total += $this->bpas->formatDecimal(($item_net_price * $item_unit_quantity), 4);
+                }
+            }
+            if (empty($products)) {
+                $this->form_validation->set_rules('product', lang('order_items'), 'required');
+            } else {
+                krsort($products);
+            }
+            $order_discount = $this->site->calculateDiscount($this->input->post('order_discount'), ($total + $product_tax));
+            $total_discount = $this->bpas->formatDecimal(($order_discount + $product_discount), 4);
+            $order_tax      = $this->site->calculateOrderTax($this->input->post('order_tax'), ($total + $product_tax - $order_discount));
+            $total_tax      = $this->bpas->formatDecimal(($product_tax + $order_tax), 4);
+            $grand_total    = $this->bpas->formatDecimal(($total + $total_tax + $this->bpas->formatDecimal($shipping) - $order_discount), 4);
+            $saleman_award_points = 0;
+            $staff = $this->site->getUser($inv->saleman_by);
+            if (!empty($staff) && $staff->save_point) {
+                if (!empty($this->Settings->each_sale)) {
+                    $saleman_award_points = floor(($grand_total / $this->Settings->each_sale) * $this->Settings->sa_point);
+                }
+            }
+            //=======acounting=========//
+            if ($this->Settings->module_account == 1) {
+                if($order_discount != 0){
+                    $accTrans[] = array(
+                        'tran_no' => $id,
+                        'tran_type' => 'Sale',
+                        'tran_date' => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_sale_discount,
+                        'amount' => $order_discount,
+                        'narrative' => 'Order Discount',
+                        'description' => $note,
+                        'biller_id' => $biller_id,
+                        'project_id' => $project_id,
+                        'customer_id' => $customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'activity_type' => 0
+                    );
+                }
+                if($order_tax != 0){
+                    $accTrans[] = array(
+                        'tran_no' => $id,
+                        'tran_type' => 'Sale',
+                        'tran_date' => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_sale_tax,
+                        'amount' => -$order_tax,
+                        'narrative' => 'Order Tax',
+                        'description' => $note,
+                        'biller_id' => $biller_id,
+                        'project_id' => $project_id,
+                        'customer_id' => $customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'activity_type' => 0
+                    );
+                }
+                if ($shipping != 0) {
+                    $accTrans[] = array(
+                        'tran_no' => $id,
+                        'tran_type' => 'Sale',
+                        'tran_date' => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_sale_freight,
+                        'amount' => -$shipping,
+                        'narrative' => 'Shipping',
+                        'description' => $note,
+                        'biller_id' => $biller_id,
+                        'project_id' => $project_id,
+                        'customer_id' => $customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'activity_type' => 0
+                    );
+                }
+            }
+            //============end accounting=======//
+            $diagnosis = $this->input->post('diagnosis[]') ? implode(",", $this->input->post('diagnosis[]')) : null;
+            $data = [
+                'date'                => $date,
+                'project_id'          => $this->input->post('project'),
+                'from_id'             => $this->input->post('from'),
+                'time_out_id'         => $this->input->post('time_out'),
+                'destination_id'      => $this->input->post('destination'),
+                'reference_no'        => $reference,
+                'po_number'           => $this->input->post('po'),
+                'customer_id'         => $customer_id,
+                'customer'            => $customer,
+                'biller_id'           => $biller_id,
+                'biller'              => $biller,
+                'warehouse_id'        => $warehouse_id,
+                'note'                => $note,
+                'staff_note'          => $staff_note,
+                'total'               => $total,
+                'product_discount'    => $product_discount,
+                'order_discount_id'   => $this->input->post('order_discount'),
+                'order_discount'      => $order_discount,
+                'total_discount'      => $total_discount,
+                'product_tax'         => $product_tax,
+                'order_tax_id'        => $this->input->post('order_tax'),
+                'order_tax'           => $order_tax,
+                'total_tax'           => $total_tax,
+                'shipping'            => $this->bpas->formatDecimal($shipping),
+                'grand_total'         => $grand_total,
+                'total_items'         => $total_items,
+                'sale_status'         => $sale_status,
+                'payment_status'      => $payment_status,
+                'payment_term'        => $payment_term,
+                'due_date'            => $due_date,
+                'updated_by'          => $this->session->userdata('user_id'),
+                'saleman_by'          => $this->input->post('saleman_by'),
+                'zone_id'             => $this->input->post('zone_id'),
+                'updated_at'          => date('Y-m-d H:i:s'),
+                'saleman_award_points'=> $saleman_award_points,
+                'diagnosis_id'        => $diagnosis ? $diagnosis:null,
+                'patience_type'       => $this->input->post('patience_type'),
+                'bed_id'              => $this->input->post('bed'),
+                'surcharge'           => $this->bpas->formatDecimal($this->input->post('surcharge')),
+            ];
+            $shipping_request = (isset($_POST['shipping_request']) && !empty($_POST['shipping_request']) ? intval($_POST['shipping_request']) : 0);
+            if (empty($inv->delivery_status) || $inv->delivery_status == 'pending') {
+                if ($shipping_request === 1) {
+                    $data['shipping_request']         = $shipping_request;
+                    $data['shipping_request_phone']   = $this->input->post('shipping_request_phone') ? strip_tags($this->input->post('shipping_request_phone')) : null;
+                    $data['shipping_request_address'] = $this->input->post('shipping_request_address') ? strip_tags($this->input->post('shipping_request_address')) : null; 
+                    $data['shipping_request_note']    = $this->input->post('shipping_request_note') ? strip_tags($this->input->post('shipping_request_note')) : null; 
+                    $data['delivery_status']          = 'pending';
+                } else {
+                    $data['shipping_request']         = $shipping_request;
+                    $data['shipping_request_phone']   = null;
+                    $data['shipping_request_address'] = null;
+                    $data['shipping_request_note']    = null;
+                    $data['delivery_status']          = null;
+                }
+            }
+            if ($payment_status != 'paid') {
+                if ($payment_status == 'partial') {
+                    if ($this->input->post('paid_by') == 'deposit') {
+                        if (!$this->site->check_customer_deposit($customer_id, $this->input->post('amount-paid'))) {
+                            $this->session->set_flashdata('error', lang('amount_greater_than_deposit'));
+                            redirect($_SERVER['HTTP_REFERER']);
+                        }
+                    }
+                    if ($this->input->post('paid_by') == 'gift_card') {
+                        $gc            = $this->site->getGiftCardByNO($this->input->post('gift_card_no'));
+                        $amount_paying = $grand_total >= $gc->balance ? $gc->balance : $grand_total;
+                        $gc_balance    = $gc->balance - $amount_paying;
+                        $payment       = [
+                            'date'         => $date,
+                            'reference_no' => $this->input->post('payment_reference_no'),
+                            'amount'       => $this->bpas->formatDecimal($amount_paying),
+                            'paid_by'      => $this->input->post('paid_by'),
+                            'cheque_no'    => $this->input->post('cheque_no'),
+                            'cc_no'        => $this->input->post('gift_card_no'),
+                            'cc_holder'    => $this->input->post('pcc_holder'),
+                            'cc_month'     => $this->input->post('pcc_month'),
+                            'cc_year'      => $this->input->post('pcc_year'),
+                            'cc_type'      => $this->input->post('pcc_type'),
+                            'created_by'   => $this->session->userdata('user_id'),
+                            'note'         => $this->input->post('payment_note'),
+                            'type'         => 'received',
+                            'gc_balance'   => $gc_balance,
+                        ];
+                    } else {
+                        $payment = [
+                            'date'         => $date,
+                            'reference_no' => $this->input->post('payment_reference_no'),
+                            'amount'       => $this->bpas->formatDecimal($this->input->post('amount-paid')),
+                            'paid_by'      => $this->input->post('paid_by'),
+                            'cheque_no'    => $this->input->post('cheque_no'),
+                            'cc_no'        => $this->input->post('pcc_no'),
+                            'cc_holder'    => $this->input->post('pcc_holder'),
+                            'cc_month'     => $this->input->post('pcc_month'),
+                            'cc_year'      => $this->input->post('pcc_year'),
+                            'cc_type'      => $this->input->post('pcc_type'),
+                            'created_by'   => $this->session->userdata('user_id'),
+                            'note'         => $this->input->post('payment_note'),
+                            'type'         => 'received',
+                        ];
+                    }
+                    $amount_paying = $this->bpas->formatDecimal($this->input->post('amount-paid'));
+                    //=====add accountig=====//
+                    if ($this->Settings->module_account == 1) {
+                        if($amount_paying < $grand_total){
+                            $accTranPayments[] = array(
+                                'tran_type' => 'Payment',
+                                'tran_date' => $date,
+                                'reference_no' => $this->input->post('payment_reference_no'),
+                                'account_code' => $this->accounting_setting->default_receivable,
+                                'amount' => ($grand_total - $amount_paying),
+                                'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                                'description' => $this->input->post('payment_note'),
+                                'biller_id' => $biller_id,
+                                'project_id' => $project_id,
+                                'customer_id' => $customer_id,
+                                'created_by'  => $this->session->userdata('user_id'),
+                                'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                            );
+                        }
+                        if ($this->input->post('paid_by') == 'deposit') {
+                            $paying_to = $this->accounting_setting->default_sale_deposit;
+                        } else {
+                            $paying_to = $this->input->post('bank_account');
+                        }
+                        $accTranPayments[] = array(
+                            'tran_type' => 'Payment',
+                            'tran_date' => $date,
+                            'reference_no' => $this->input->post('payment_reference_no'),
+                            'account_code' => $paying_to,
+                            'amount' => $amount_paying,
+                            'narrative' => $this->site->getAccountName($paying_to),
+                            'description' => $this->input->post('payment_note'),
+                            'biller_id' => $biller_id,
+                            'project_id' => $project_id,
+                            'customer_id' => $customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => 0
+                        );
+                    }
+                    //=====end accountig=====//
+                } else {
+                    $payment = [];
+                    $accTranPayments[] = array(
+                        'tran_no' => $id,
+                        'tran_type' => 'Sale',
+                        'tran_date' => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_receivable,
+                        'amount' => $grand_total,
+                        'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                        'biller_id' => $biller_id,
+                        'project_id' => $project_id,
+                        'customer_id' => $customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'payment_id' => $id,
+                        'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                    );
+                }
+            } else {
+                $accTranPayments[] = array(
+                    'tran_no' => $id,
+                    'tran_type' => 'Sale',
+                    'tran_date' => $date,
+                    'reference_no' => $reference,
+                    'account_code' => $this->accounting_setting->default_receivable,
+                    'amount' => $grand_total,
+                    'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                    'biller_id' => $biller_id,
+                    'project_id' => $project_id,
+                    'customer_id' => $customer_id,
+                    'created_by'  => $this->session->userdata('user_id'),
+                    'payment_id' => $id,
+                    'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                );
+            }
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path']   = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size']      = $this->allowed_file_size;
+                $config['overwrite']     = false;
+                $config['encrypt_name']  = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                $photo              = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+            $cus_sales = $this->sales_model->getSalesTotals($customer_id);
+            if(($customer_details->credit_limit != null) && (($cus_sales->total_amount - $cus_sales->paid) - ($inv->grand_total - $inv->paid) + $data['grand_total'] - $inv->paid) > $customer_details->credit_limit){
+                $this->session->set_flashdata('error', lang("customer_due_over_credit_amount"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+            // $this->bpas->print_arrays($data, $products);
+            // $this->bpas->print_arrays($stockmoves, $accTrans);
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->updateSale($id, $data, $products, $stockmoves, $accTrans, $accTranPayments, $commission_product)) {
+            $this->session->set_userdata('remove_slls', 1);
+            $this->session->set_flashdata('message', lang('sale_updated'));
+            admin_redirect($inv->pos ? 'pos/sales' : 'sales');
+        } else {
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['inv'] = $this->sales_model->getInvoiceByID($id);
+            $this->bpas->deadlineDayEditing($this->data['inv']->date);
+            $inv_items = $this->sales_model->getAllInvoiceItems($id);
+            $c = rand(100000, 9999999);
+            foreach ($inv_items as $item) {
+                $row = $this->sales_model->getWarehouseProduct($item->product_id, $item->warehouse_id);
+                $cate_id = !empty($item->subcategory_id) ? $item->subcategory_id : $item->category_id;
+                if (!$row) {
+                    $row             = json_decode('{}');
+                    $row->tax_method = 0;
+                    $row->quantity   = 0;
+                } else {
+                    unset($row->cost, $row->details, $row->product_details, $row->image, $row->barcode_symbology, $row->cf1, $row->cf2, $row->cf3, $row->cf4, $row->cf5, $row->cf6, $row->supplier1price, $row->supplier2price, $row->cfsupplier3price, $row->supplier4price, $row->supplier5price, $row->supplier1, $row->supplier2, $row->supplier3, $row->supplier4, $row->supplier5, $row->supplier1_part_no, $row->supplier2_part_no, $row->supplier3_part_no, $row->supplier4_part_no, $row->supplier5_part_no);
+                }
+                $pis = $this->site->getStockMovement_ProductBalanceQuantity($item->product_id, $item->warehouse_id, $item->option_id);
+                if ($pis) {
+                    $row->quantity = $pis->quantity_balance;
+                }
+                $row->id              = $item->product_id;
+                $row->code            = $item->product_code;
+                $row->name            = $item->product_name;
+                $row->type            = $item->product_type;
+                $row->base_quantity   = $item->quantity;
+                $row->expiry          = $item->expiry;
+                $row->base_unit       = (!empty($row->unit) ? $row->unit : $item->product_unit_id);
+                $row->base_unit_price = (!empty($row->price) ? $row->price : $item->unit_price);
+                $row->unit            = $item->product_unit_id;
+                $row->qty             = $item->unit_quantity;
+                $row->quantity       += $item->quantity;
+                $row->discount        = $item->discount ? $item->discount : '0';
+                $row->item_tax        = $item->item_tax      > 0 ? $item->item_tax      / $item->quantity : 0;
+                $row->item_discount   = $item->item_discount > 0 ? $item->item_discount / $item->quantity : 0;
+                $row->price           = $this->bpas->formatDecimal($item->net_unit_price + $this->bpas->formatDecimal($row->item_discount));
+                $row->unit_price      = $row->tax_method ? $item->unit_price + $this->bpas->formatDecimal($row->item_discount) + $this->bpas->formatDecimal($row->item_tax) : $item->unit_price + ($row->item_discount);
+                $row->real_unit_price = $item->real_unit_price;
+                $row->tax_rate        = $item->tax_rate_id;
+                $row->serial          = '';
+                $row->serial_no       = $item->serial_no;
+                $row->max_serial      = $item->max_serial;
+                $row->warranty        = $item->warranty;
+                $row->option          = $item->option_id;
+                $row->addition_type   = $item->addition_type;
+                $options              = $this->sales_model->getProductOptions($row->id, $item->warehouse_id);
+                $row->details         = $item->comment;
+                $row->option_name     = $item->option_name;
+                $row->saleman_item    = $item->saleman_by;
+                $combo_items          = $row->type == 'combo' ? json_decode($item->combo_product) : false;
+                $categories           = false;
+                $categories           = $this->site->getCategoryByID($cate_id);
+                $fiber_type           = $this->sales_model->getFiberTypeById($row->id);
+                $categories->type_id  = isset($row->addition_type) ? $row->addition_type : null;
+                $fibers               = array('fiber' => $categories, 'type' => $fiber_type, );
+                $units                = !empty($row->base_unit) ? $this->site->getUnitsByBUID($row->base_unit) : null;
+                $tax_rate             = $this->site->getTaxRateByID($row->tax_rate);
+                $ri                   = $this->Settings->item_addition ? $row->id : $c;
+                $set_price            = $this->site->getUnitByProId($row->id);
+                $pr[$ri] = [
+                    'id' => $c, 'item_id' => $row->id, 'label' => $row->name. ' (' . $row->code . ')' . ($row->expiry != null ?  ' (' . $row->expiry . ')' : ''), 
+                    'category' => (isset($row->category_id) ? $row->category_id : ""), 'row' => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 
+                    'units' => $units, 'options' => $options, 'fiber' => $fibers, 'expiry'=> $row->expiry, 'set_price' => $set_price,
+                ];
+                $c++;
+            }
+            $this->data['count']        = explode(',', $this->session->userdata('warehouse_id'));
+            $this->data['projects']     = $this->site->getAllProject();
+            $this->data['inv_items']    = json_encode($pr);
+            $this->data['id']           = $id;
+            $this->data['payment_term'] = $this->site->getAllPaymentTerm();
+            $this->data['agencies']     = $this->site->getAllUsers();
+            $this->data['tables']       = $this->table_model->getsuspend_note();
+            $this->data['billers']      = $this->site->getAllCompanies('biller');
+            $this->data['units']        = $this->site->getAllBaseUnits();
+            $this->data['tax_rates']    = $this->site->getAllTaxRates();
+            $this->data['warehouses']   = $this->site->getAllWarehouses();
+            $this->data['zones']        = $this->site->getAllZones();
+            $this->data['salemans']     = $this->site->getAllSalemans($this->Settings->group_saleman_id);
+            $user = $this->site->getUser($this->session->userdata('user_id'));
+            if ($this->Settings->multi_biller) {
+                $this->data['user_billers'] = $user->multi_biller ? explode(',', $user->multi_biller) : null;
+            } else {
+                $this->data['user_billers'] = $user->biller_id ? ((array) $user->biller_id) : null;
+            }
+            $this->data['count']            = explode(',', $this->session->userdata('warehouse_id'));
+            $this->data['user_warehouses']  = $user->warehouse_id ? explode(',', $user->warehouse_id) : null;
+            $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('edit_sale')]];
+            $meta = ['page_title' => lang('edit_sale'), 'bc' => $bc];
+            $this->page_construct('sales/edit', $meta, $this->data);
+        }
+    }
+
+    public function add_delivery($id = null)
+    {
+        $this->bpas->checkPermissions();
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $sale = $this->sales_model->getInvoiceByID($id);
+        if ($sale->sale_status != 'completed') {
+            $this->session->set_flashdata('error', lang('status_is_x_completed'));
+            $this->bpas->md();
+        }
+        if ($delivery = $this->sales_model->getDeliveryBySaleID($id)) {
+            $this->edit_delivery($delivery->id);
+        } else {
+            $this->form_validation->set_rules('sale_reference_no', lang('sale_reference_no'), 'required');
+            $this->form_validation->set_rules('customer', lang('customer'), 'required');
+            $this->form_validation->set_rules('address', lang('address'), 'required');
+            if ($this->form_validation->run() == true) {
+                if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                    $date = $this->bpas->fld(trim($this->input->post('date')));
+                } else {
+                    $date = date('Y-m-d H:i:s');
+                }
+                $dlDetails = [
+                    'date'              => $date,
+                    'sale_id'           => $this->input->post('sale_id'),
+                    'do_reference_no'   => $this->input->post('do_reference_no') ? $this->input->post('do_reference_no') : $this->site->getReference('do'),
+                    'sale_reference_no' => $this->input->post('sale_reference_no'),
+                    'customer'          => $this->input->post('customer'),
+                    'address'           => $this->input->post('address'),
+                    'status'            => $this->input->post('status'),
+                    'delivered_by'      => $this->input->post('delivered_by'),
+                    'received_by'       => $this->input->post('received_by'),
+                    // 'note'              => $this->bpas->clear_tags($this->input->post('note')),
+                    'note'              => $this->input->post('note'),
+                    'created_by'        => $this->session->userdata('user_id'),
+                    'biller_id'         => $sale->biller_id,
+                    'money_collection'  => $this->input->post('collection_status'),
+                    'collection_amount'  => $this->input->post('collection_amount'),
+                ];
+                if ($_FILES['document']['size'] > 0) {
+                    $this->load->library('upload');
+                    $config['upload_path']   = $this->digital_upload_path;
+                    $config['allowed_types'] = $this->digital_file_types;
+                    $config['max_size']      = $this->allowed_file_size;
+                    $config['overwrite']     = false;
+                    $config['encrypt_name']  = true;
+                    $this->upload->initialize($config);
+                    if (!$this->upload->do_upload('document')) {
+                        $error = $this->upload->display_errors();
+                        $this->session->set_flashdata('error', $error);
+                        redirect($_SERVER['HTTP_REFERER']);
+                    }
+                    $photo                   = $this->upload->file_name;
+                    $dlDetails['attachment'] = $photo;
+                }
+            } elseif ($this->input->post('add_delivery')) {
+                if ($sale->shop) {
+                    $this->load->library('sms');
+                    $this->sms->delivering($sale->id, $dlDetails['do_reference_no']);
+                }
+                $this->session->set_flashdata('error', validation_errors());
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+            if ($this->form_validation->run() == true && $this->sales_model->addDelivery($dlDetails)) {
+                $this->session->set_flashdata('message', lang('delivery_added'));
+                admin_redirect('sales/deliveries');
+            } else {
+                $this->data['error']           = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+                $this->data['customer']        = $this->site->getCompanyByID($sale->customer_id);
+                $this->data['address']         = $this->site->getAddressByID($sale->address_id);
+                $this->data['inv']             = $sale;
+                $this->data['do_reference_no'] = $this->site->getReference('do');
+                $this->data['modal_js']        = $this->site->modal_js();
+                $this->data['drivers']  = $this->site->getDriver();
+                $this->load->view($this->theme . 'deliveries/add_delivery', $this->data);
+            }
+        }
+    }
+
+    public function add_gift_card()
+    {
+        $this->bpas->checkPermissions(false, true);
+        $this->form_validation->set_rules('card_no', lang('card_no'), 'trim|is_unique[gift_cards.card_no]|required');
+        $this->form_validation->set_rules('value', lang('value'), 'required');
+        if ($this->form_validation->run() == true) {
+            $customer_details = $this->input->post('customer') ? $this->site->getCompanyByID($this->input->post('customer')) : null;
+            $customer         = $customer_details ? $customer_details->company : null;
+            $data             = ['card_no' => $this->input->post('card_no'),
+            'value'           => $this->input->post('value'),
+            'discount'        => $this->input->post('discount') ? $this->input->post('discount') : 0,
+            'customer_id'     => $this->input->post('customer') ? $this->input->post('customer') : null,
+            'customer'        => $customer,
+            'balance'         => $this->input->post('value'),
+            'expiry'          => $this->input->post('expiry') ? $this->bpas->fsd($this->input->post('expiry')) : null,
+            'created_by'      => $this->session->userdata('user_id'),
+        ];
+        $sa_data = [];
+        $ca_data = [];
+        if ($this->input->post('staff_points')) {
+            $sa_points = $this->input->post('sa_points');
+            $user      = $this->site->getUser($this->input->post('user'));
+            if ($user->award_points < $sa_points) {
+                $this->session->set_flashdata('error', lang('award_points_wrong'));
+                admin_redirect('sales/gift_cards');
+            }
+            $sa_data = ['user' => $user->id, 'points' => ($user->award_points - $sa_points)];
+        } elseif ($customer_details && $this->input->post('use_points')) {
+            $ca_points = $this->input->post('ca_points');
+            if ($customer_details->award_points < $ca_points) {
+                $this->session->set_flashdata('error', lang('award_points_wrong'));
+                admin_redirect('sales/gift_cards');
+            }
+            $ca_data = ['customer' => $this->input->post('customer'), 'points' => ($customer_details->award_points - $ca_points)];
+        }
+            // $this->bpas->print_arrays($data, $ca_data, $sa_data);
+        } elseif ($this->input->post('add_gift_card')) {
+            $this->session->set_flashdata('error', validation_errors());
+            admin_redirect('sales/gift_cards');
+        }
+
+        if ($this->form_validation->run() == true && $this->sales_model->addGiftCard($data, $ca_data, $sa_data)) {
+            $this->session->set_flashdata('message', lang('gift_card_added'));
+            admin_redirect('sales/gift_cards');
+        } else {
+            $this->data['error']      = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['modal_js']   = $this->site->modal_js();
+            $this->data['users']      = $this->sales_model->getStaff();
+            $this->data['page_title'] = lang('new_gift_card');
+            $this->load->view($this->theme . 'sales/add_gift_card', $this->data);
+        }
+    }
+
+    public function add_downpayment($id = null, $product_id = null)
+    {
+        $this->bpas->checkPermissions('payments', true);
+        $this->load->helper('security');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        if ($product_id) {
+            $sale = $this->sales_model->getProductByID($product_id);
+        } else {
+            $sale = $this->sales_model->getInvoiceByID($id);
+            if ($sale->payment_status == 'paid' && $sale->grand_total == $sale->paid) {
+                $this->session->set_flashdata('error', lang("sale_already_paid"));
+                $this->bpas->md();
+            }
+        }
+        $this->form_validation->set_rules('amount', lang('amount'), 'required');
+        if ($this->form_validation->run() == true) {
+            $percent = "%";
+            $dpm= $this->input->post('total_payable_usd');
+            $percent_amount = $this->input->post('amount');
+            if (preg_match('/^[0-9]+(\\.[0-9]+)?$/', $percent_amount)){
+                $discount_num = $this->input->post('amount');
+            } else {
+                $discount_num =(float)(preg_replace("/[^0-9]/", "", $percent_amount));
+            }
+            if(strpos($percent_amount, $percent) !== false){
+                $amount = $dpm * $discount_num / 100 ; 
+            }else{
+                $amount = $discount_num; 
+            }
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            $data = [
+                'title'          => $this->input->post('title'),
+                'sale_id'        => $this->input->post('sale_id'),
+                'product_id'     => $this->input->post('product_id'),
+                'amount'         => $amount,
+                'percent'        => $this->input->post('amount'),
+                'type'           => $this->input->post('type'),
+                'description'    => $this->input->post('note'),
+                'created_by'     => $this->session->userdata('user_id'),
+                'payment_date'   => $this->bpas->fsd($this->input->post('payment_date')),
+                'created_at'     => $date,
+            ];
+        } elseif ($this->input->post('add_Downpayment')) {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->addDownPayment($data)) {
+            $this->session->set_flashdata('message', lang('Downpayment_added'));
+            redirect($_SERVER['HTTP_REFERER']);
+        } else {
+            if($id){
+                if($sale->paid > 0 ) {
+                    $this->data['get_downpayment'] = $this->sales_model->get_down_Paymentamount($sale->id);
+                }
+                $this->data['deposit']         = $this->site->getCustomerDeposit($sale->customer_id);
+                $this->data['inv']             = $sale;
+                $this->data['balance']         = $sale->grand_total - $sale->paid;
+                $this->data['sale_id']         = $sale->id;
+                $this->data['product_id']      = 0;
+            }else{
+                $this->data['inv']             = $sale;
+                $this->data['balance']         = $sale->price;
+                $this->data['sale_id']         = 0;
+                $this->data['product_id']      = $sale->id;
+            }
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['modal_js']        = $this->site->modal_js();
+            $this->load->view($this->theme . 'sales/add_downpayment', $this->data);
+        }
+    }
+    public function edit_downpayment($id = null){
+        $this->bpas->checkPermissions('payments', true);
+        $this->load->helper('security');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->form_validation->set_rules('amount_paid_usd', lang('amount_paid_usd'), 'required');
+        if ($this->form_validation->run() == true) {
+            $sale = $this->sales_model->getInvoiceByID($this->input->post('sale_id'));
+            $percent = "%";
+            $dpm= $this->input->post('total_payable_usd');
+            $percent_amount = $this->input->post('amount_paid_usd');
+            if (preg_match('/^[0-9]+(\\.[0-9]+)?$/', $percent_amount)){
+                $discount_num = $this->input->post('amount_paid_usd');
+            } else {
+                $discount_num =(float)(preg_replace("/[^0-9]/", "", $percent_amount));
+            }
+            if(strpos($percent_amount, $percent) !== false){
+                $amount = $dpm * $discount_num / 100 ; 
+            }else{
+                $amount = $discount_num; 
+            }
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            $payment = [
+                'title'          => $this->input->post('title'),
+                'sale_id'        => $this->input->post('sale_id'),
+                'amount'         => $amount,
+                'percent'        => $this->input->post('amount_paid_usd'),
+                'type'        => $this->input->post('type'),
+                'description'    => $this->input->post('note'),
+                'created_by'     => $this->session->userdata('user_id'),
+                'status'         => $this->input->post('down_payment_status'),
+                'created_at'     => $date,
+                'payment_date'   => $this->bpas->fsd($this->input->post('payment_date')),   
+            ];
+
+        } elseif ($this->input->post('edit_Downpayment')) {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        
+        if ($this->form_validation->run() == true && $this->sales_model->updateDpayment($id,$payment)) {
+            $this->session->set_flashdata('message', lang('Downpayment_edited'));
+            redirect($_SERVER['HTTP_REFERER']);
+        } else {
+            $downpayment=$this->sales_model->getDownPaymentByID($id);
+            $sale = $this->sales_model->getInvoiceByID($downpayment->sale_id);
+            $this->data['inv']             = $sale;
+            $this->data['get_downpayment'] = $this->sales_model->get_down_Paymentamounts($downpayment->sale_id);
+            $this->data['payments_groupby_term'] = $this->sales_model->getInvoicePaymentsGroupByTerm($sale->id);
+            $this->data['payments']        = $this->sales_model->getdownPayment($id);
+            $this->data['deposit']         = $this->site->getCustomerDeposit($sale->customer_id);
+            $this->data['currency_dollar'] = $this->site->getCurrencyByCode('USD');
+            $this->data['payment_ref']     = $this->site->getReference('pay');
+            $this->data['modal_js']        = $this->site->modal_js();
+            $this->load->view($this->theme . 'sales/edit_downpayment', $this->data);
+        }
+    }
+    
+    public function maintenance($biller_id = null) 
+    {
+        $this->bpas->checkPermissions('index');
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $user = $this->site->getUser($this->session->userdata('user_id'));
+        if ($this->Settings->multi_biller) {
+            $count = $user->multi_biller ? explode(',', $user->multi_biller) : null;         
+        } else {
+            $count = $user->biller_id ? ((array) $user->biller_id) : null;
+        }
+        if ($this->Owner || $this->Admin || empty($count)) {
+            $this->data['billers']   = $this->site->getAllCompanies('biller');
+            $this->data['biller_id'] = $biller_id;
+            $this->data['biller']    = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        } else {
+            if (count($count) > 1) {
+                $this->data['billers']   = $this->site->getAllCompanies('biller');
+            } else {
+                $this->data['billers']   = null;
+            }
+            $this->data['count_billers'] = $count;
+            $this->data['user_biller']   = (isset($count) && count($count) == 1) ? $this->site->getCompanyByID($this->session->userdata('biller_id')) : null;
+            $this->data['biller_id']     = $biller_id;
+            $this->data['biller']        = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        }
+
+        $this->data['alert_id'] = isset($_GET['alert_id']) ? ($_GET['alert_id'] !== '' ? $_GET['alert_id'] : 'empty')  : null;
+        $this->data['users']            = $this->site->getStaff();
+        $this->data['products']         = $this->site->getProducts();
+        $this->data['warehouses']       = $this->site->getAllWarehouses();
+        $this->data['count_warehouses'] = explode(',', $this->session->userdata('warehouse_id'));
+        $this->data['drivers']          = $this->site->getDriver();
+       
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => '#', 'page' => lang('maintenance')]];
+        $meta = ['page_title' => lang('maintenance'), 'bc' => $bc];
+        $this->page_construct('maintenance/maintenance_list', $meta, $this->data);
+    } 
+    public function getMaintenances($biller_id = null)
+    {
+        $this->bpas->checkPermissions('index');
+        if ((!$this->Owner && !$this->Admin) && !$biller_id) {
+            $user = $this->site->getUser($this->session->userdata('user_id'));
+            if ($this->Settings->multi_biller) {
+                $biller_id = $user->multi_biller ? explode(',', $user->multi_biller) : null;         
+            } else {
+                $biller_id = $user->biller_id ? ((array) $user->biller_id) : null;
+            }
+        }
+        $user_query     = $this->input->get('user') ? $this->input->get('user') : null;
+        $customer       = $this->input->get('customer') ? $this->input->get('customer') : null;
+        $biller         = $this->input->get('biller') ? $this->input->get('biller') : null;
+        $reference_no   = $this->input->get('reference_no') ? $this->input->get('reference_no') : NULL;
+        $saleman_by     = $this->input->get('saleman_by') ? $this->input->get('saleman_by') : null;
+        $product_id     = $this->input->get('product_id') ? $this->input->get('product_id') : null;
+        $warehouse      = $this->input->get('warehouse') ? $this->input->get('warehouse') : null;
+        $delivered_by   = $this->input->get('delivered_by') ? $this->input->get('delivered_by') : null;
+        $payment_status = $this->input->get('payment_status') ? $this->input->get('payment_status') : NULL;
+        $start_date     = $this->input->get('start_date') ? $this->input->get('start_date') : null;
+        $end_date       = $this->input->get('end_date') ? $this->input->get('end_date') : null;
+        $alert          = $this->input->get('alert') ? $this->input->get('alert') : null;
+        $a              = $this->input->get('a') ? $this->input->get('a') : null;
+
+        if ($start_date) {
+            $start_date = $this->bpas->fld($start_date . ' 00:00:00');
+            $end_date   = $this->bpas->fld($end_date . ' 23:59:00');
+        }
+        //$duplicate_link       = anchor('admin/sales/generate_invoice/$1', '<i class="fa fa-plus-circle"></i> ' . lang('generate_invoice'));
+        $view_schedule       = anchor('admin/sales/view_schedule/$1', '<i class="fa fa-plus-circle"></i> ' . lang('view_schedule'));
+        $edit_warranty_link    = anchor('admin/sales/edit_maintenance/$1', '<i class="fa fa-money"></i> ' . lang('Edit_maintenance'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $delete_link          = "<a href='#' class='po' title='<b>" . lang('delete_sale') . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete_maintenance/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_maintenance') . '</a>';
+
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+        <ul class="dropdown-menu pull-right" role="menu">
+            <li>' . $view_schedule . '</li>
+            <li>' . $edit_warranty_link . '</li>
+            <li>' . $delete_link . '</li>
+        </ul>
+        </div></div>';
+
+        $ds = "( SELECT d.sale_id,d.delivered_by,d.status,c.name as delivery_name
+        from {$this->db->dbprefix('deliveries')} d LEFT JOIN {$this->db->dbprefix('companies')} c 
+        on d.delivered_by = c.id ) FSI"; 
+
+        $this->load->library('datatables');
+        $this->datatables
+        ->select("{$this->db->dbprefix('maintenance')}.id as id, 
+            DATE_FORMAT({$this->db->dbprefix('maintenance')}.date, '%Y-%m-%d %T') as date,
+            DATE_FORMAT({$this->db->dbprefix('maintenance')}.maintenance_date, '%Y-%m-%d %T') as main_date ,
+            {$this->db->dbprefix('maintenance')}.reference_no as referece, 
+            {$this->db->dbprefix('sales')}.reference_no as referece_no,
+            {$this->db->dbprefix('companies')}.name,
+            {$this->db->dbprefix('maintenance')}.note,
+            {$this->db->dbprefix('maintenance')}.attachment,
+            {$this->db->dbprefix('maintenance')}.maintenance_status,
+            CONCAT({$this->db->dbprefix('users')}.first_name, ' ', {$this->db->dbprefix('users')}.last_name)")
+            ->join('companies', 'maintenance.customer_id = companies.id', 'left')   
+            ->join('users', 'maintenance.created_by = users.id', 'left') 
+            ->join('sales', 'maintenance.sale_id = sales.id','left')
+        ->from('maintenance');
+
+        if ($alert) {
+            $this->datatables->where('DATE_SUB(maintenance_date, INTERVAL 7 DAY) < CURDATE()');
+            $this->datatables->where('maintenance.maintenance_status !=', 'completed');
+        }
+
+        if ($biller_id) {
+            $this->datatables->where_in('sales.biller_id', $biller_id);
+        }
+        if (!$this->Customer && !$this->Supplier && !$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where("FIND_IN_SET(bpas_sales.created_by, '" . $this->session->userdata('user_id') . "')");
+        }
+        if ($this->Customer) {
+            $this->datatables->where('projects.customer_id','bpas_projects.customer_id');
+        }
+        if ($this->input->get('shop') == 'yes') {
+            $this->datatables->where('shop', 1);
+        } elseif ($this->input->get('shop') == 'no') {
+            $this->datatables->where('shop !=', 1);
+        }
+        if ($this->input->get('attachment') == 'yes') {
+            $this->datatables->where('payment_status !=', 'paid')->where('attachment !=', null);
+        }
+        if ($user_query) {
+            $this->datatables->where('sales.created_by', $user_query);
+        }
+        if ($reference_no) {
+            $this->datatables->where('maintenance.reference_no', $reference_no);
+        }
+        if ($biller) {
+            $this->datatables->where('sales.biller_id', $biller);
+        }
+        if ($customer) {
+            $this->datatables->where('sales.customer_id', $customer);
+        }
+        if ($warehouse) {
+            $this->datatables->where('sales.warehouse_id', $warehouse);
+        }
+        if ($a || $a == 'empty') {
+            $alert_ids = explode('-', $a);
+            $alert_id  = $a;
+
+            if (count($alert_ids) > 1) {
+                $this->datatables->where_in('sales.id', $alert_ids);
+            } else {
+                $this->datatables->where('sales.id', $alert_id);
+            }
+        }
+
+        if ($start_date) {
+            $this->datatables->where($this->db->dbprefix('maintenance') . '.maintenance_date BETWEEN "' . $start_date . '" and "' . $end_date . '"');
+        }
+        $this->datatables->add_column('Actions', $action, 'id');
+        echo $this->datatables->generate();
+    }
+    public function add_maintenance($id = null){
+        $this->bpas->checkPermissions('index');
+        $this->load->helper('security');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $sale = $this->sales_model->getInvoiceByID($id);
+
+        if ($maintenace = $this->sales_model->getMaintenanceBySaleID($id)) {
+            $this->edit_maintenance($maintenace->id);
+        } else {
+            $this->form_validation->set_rules('reference_no', lang("reference_no"), 'required');
+            $this->form_validation->set_rules('maintenance_date', lang('maintenance_date'), 'required');
+            $this->form_validation->set_rules('userfile', lang('attachment'), 'xss_clean');
+            if ($this->form_validation->run() == true) {
+               // $sale = $this->sales_model->getInvoiceByID($this->input->post('sale_id'));
+                $customer_id = $sale->customer_id;
+
+                if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                    $date = $this->bpas->fld(trim($this->input->post('date')));
+                } else {
+                    $date = date('Y-m-d H:i:s');
+                    
+                }
+                $month_value = '+'.$this->input->post('maintenance_date').'';
+                $start = strtotime($date);
+                $start = strtotime($month_value, $start);
+
+                $payment = [
+                    'date'              => $date,
+                    'sale_id'           => $this->input->post('sale_id'),
+                    'customer_id'       => $customer_id,
+                    'reference_no'      => $this->input->post('reference_no'),
+                    'maintenance_date'  => $this->bpas->fsd($this->input->post('maintenance_date')),
+                    'note'              => $this->input->post('note'),
+                    'frequency'         => $this->input->post('frequency'),
+                    'term'              => $this->input->post('term'),
+                    'amount'            => $this->input->post('amount'),
+                    'payment'           => $this->input->post('payment'),
+                    'created_by'        => $this->session->userdata('user_id'),
+                ];
+
+                //=====end accounting=====//
+                if ($_FILES['userfile']['size'] > 0) {
+                    $this->load->library('upload');
+                    $config['upload_path']   = $this->digital_upload_path;
+                    $config['allowed_types'] = $this->digital_file_types;
+                    $config['max_size']      = $this->allowed_file_size;
+                    $config['overwrite']     = false;
+                    $config['encrypt_name']  = true;
+                    $this->upload->initialize($config);
+                    if (!$this->upload->do_upload()) {
+                        $error = $this->upload->display_errors();
+                        $this->session->set_flashdata('error', $error);
+                        redirect($_SERVER['HTTP_REFERER']);
+                    }
+                    $photo                 = $this->upload->file_name;
+                    $payment['attachment'] = $photo;
+                }
+
+            } elseif ($this->input->post('add_maintenance')) {
+                $this->session->set_flashdata('error', validation_errors());
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+
+            if ($this->form_validation->run() == true && 
+                $this->sales_model->addMaintenance($payment, $customer_id)) {
+                $this->session->set_flashdata('message', lang('maintenance_added'));
+                admin_redirect('sales/maintenance');
+            } else {
+                $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+                $this->data['maintenance'] = $this->sales_model->getMaintenanceByID($id);
+                $this->data['inv']         = $sale;
+                $this->data['mainta_ref'] = $this->site->getReference('main');
+                // $this->data['payment_ref'] = $this->site->getReference('pay');
+                $this->data['modal_js']    = $this->site->modal_js();
+                $this->load->view($this->theme . 'maintenance/add_maintenance', $this->data);
+            }
+        }
+    }
+    public function edit_maintenance($id = null){
+        $this->bpas->checkPermissions('index');
+        $this->load->helper('security');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $maintenance =$this->sales_model->getMaintenanceByID($id);
+        $sale = $this->sales_model->getInvoiceByID($maintenance->sale_id);
+        $this->form_validation->set_rules('reference_no', lang("reference_no"), 'required');
+        $this->form_validation->set_rules('maintenance_date', lang('maintenance_date'), 'required');
+        $this->form_validation->set_rules('userfile', lang('attachment'), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+            $customer_id = $sale->customer_id;
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            $month_value = '+'.$this->input->post('maintenance_date').'';
+            $start = strtotime($date);
+            $start = strtotime($month_value, $start);
+            $maintenace = [
+                'date'              => $date,
+                'sale_id'           => $this->input->post('sale_id'),
+                'customer_id'       => $customer_id,
+                'reference_no'      => $this->input->post('reference_no'),
+                'maintenance_date'  => $this->bpas->fsd($this->input->post('maintenance_date')),
+                'note'              => $this->input->post('note'),
+                'frequency'         => $this->input->post('frequency'),
+                'term'              => $this->input->post('term'),
+                'amount'            => $this->input->post('amount'),
+                'payment'           => $this->input->post('payment'),
+                'created_by'        => $this->session->userdata('user_id'),
+            ];
+            //=====end accounting=====//
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path']   = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size']      = $this->allowed_file_size;
+                $config['overwrite']     = false;
+                $config['encrypt_name']  = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                $photo                 = $this->upload->file_name;
+                $maintenace['attachment'] = $photo;
+            }
+        } elseif ($this->input->post('add_maintenance')) {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+
+        if ($this->form_validation->run() == true && $this->sales_model->UpdateMaintenance($maintenace, $id)) {
+            $this->session->set_flashdata('message', lang('maintenance_updated'));
+            redirect($_SERVER['HTTP_REFERER']);
+        } else {
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['maintenance'] = $this->sales_model->getMaintenanceByID($id);
+            $this->data['inv']         = $maintenance;
+            $this->data['payment_ref'] = $this->site->getReference('pay');
+            $this->data['modal_js']    = $this->site->modal_js();
+            $this->load->view($this->theme . 'maintenance/edit_maintenance', $this->data);
+        }
+    }
+    public function delete_maintenance($id = null){
+        $this->bpas->checkPermissions();
+
+        if ($this->sales_model->delete_maintenance($id)) {
+            $this->bpas->send_json(['error' => 0, 'msg' => lang('maintenance_deleted')]);
+        }
+    }
+    public function view_schedule($id = NULL)
+    {
+        $this->bpas->checkPermissions('index');
+        $this->data['id'] = $id;
+        $this->data['maintenance'] = $this->site->getMaintenanceByID($id);
+        //$this->data['sale'] = $this->installments_model->getSaleByID($this->data['installment']->sale_id);
+        $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('installments'), 'page' => lang('installments')), array('link' => '#', 'page' => lang('installment_details')));
+        $meta = array('page_title' => lang('installment_details'), 'bc' => $bc);
+        $this->page_construct('maintenance/view', $meta, $this->data);
+    }
+    public function maintenance_alert($warehouse_id = null)
+    {
+            $this->bpas->checkPermissions();
+            $count = explode(',', $this->session->userdata('warehouse_id'));
+          
+            $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+            if ($this->Owner || $this->Admin || !$this->session->userdata('warehouse_id')) {
+                $this->data['warehouses']   = $this->site->getAllWarehouses();
+                $this->data['warehouse_id'] = $warehouse_id;
+                $this->data['warehouse']    = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+            } else {
+                if (count($count)>1) {
+                    $this->data['warehouses']   =  $this->site->getAllWarehouses();
+                } else {
+                    $this->data['warehouses']   = null;
+                }
+
+                $this->data['count_warehouses'] = $count;
+                $this->data['warehouse_id'] = $warehouse_id;
+                $this->data['warehouse']    = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+            }
+
+            $this->data['alert_id'] = isset($_GET['alert_id']) ? ($_GET['alert_id'] !== '' ? $_GET['alert_id'] : 'empty')  : null;
+
+            $biller_id = $this->session->userdata('biller_id');
+            $this->data['users'] = $this->site->getStaff();
+            $this->data['products'] = $this->site->getProducts();
+            $this->data['warehouses'] = $this->site->getAllWarehouses();
+            $this->data['billers'] = $this->site->getAllCompanies('biller');
+            $this->data['user_billers'] = $this->site->getCompanyByID($biller_id);
+            $this->data['drivers']  = $this->site->getDriver();
+            $this->data['amount_alert']  = 7;
+            if ($warehouse_id) {
+                $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => '#', 'page' => lang('sales')]];
+                $meta = ['page_title' => lang('sales'), 'bc' => $bc];
+                $this->page_construct('sales/maintenance_list', $meta, $this->data);
+            } else {
+                $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => '#', 'page' => lang('sales')]];
+                $meta = ['page_title' => lang('sales'), 'bc' => $bc];
+                $this->page_construct('sales/maintenance_list', $meta, $this->data);
+            }
+    } 
+    public function generate_invoice($mid){
+        $row  = $this->site->getMaintenanceByID($mid);
+        $sale_id = $row->sale_id;
+        admin_redirect('sales/add?sale_id='.$sale_id);
+    }
+   
+    public function combine_pdf($sales_id)
+    {
+        $this->bpas->checkPermissions('pdf');
+
+        foreach ($sales_id as $id) {
+            $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+            $inv                 = $this->sales_model->getInvoiceByID($id);
+            if (!$this->session->userdata('view_right')) {
+                $this->bpas->view_rights($inv->created_by);
+            }
+            $this->data['barcode']     = "<img src='" . admin_url('products/gen_barcode/' . $inv->reference_no) . "' alt='" . $inv->reference_no . "' class='pull-left' />";
+            $this->data['customer']    = $this->site->getCompanyByID($inv->customer_id);
+            $this->data['payments']    = $this->sales_model->getPaymentsForSale($id);
+            $this->data['biller']      = $this->site->getCompanyByID($inv->biller_id);
+            $this->data['user']        = $this->site->getUser($inv->created_by);
+            $this->data['warehouse']   = $this->site->getWarehouseByID($inv->warehouse_id);
+            $this->data['inv']         = $inv;
+            $this->data['rows']        = $this->sales_model->getAllInvoiceItems($id);
+            $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+            $this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+            $html_data                 = $this->load->view($this->theme . 'sales/pdf', $this->data, true);
+            if (!$this->Settings->barcode_img) {
+                $html_data = preg_replace("'\<\?xml(.*)\?\>'", '', $html_data);
+            }
+
+            $html[] = [
+                'content' => $html_data,
+                'footer'  => $this->data['biller']->invoice_footer,
+            ];
+        }
+
+        $name = lang('sales') . '.pdf';
+        $this->bpas->generate_pdf($html, $name);
+    }
+    
+    public function delete($id = null)
+    {
+        $this->bpas->checkPermissions(null, true);
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $inv = $this->sales_model->getInvoiceByID($id);
+        if (empty($inv)) {
+            $this->session->set_flashdata('error', lang('unable_to_deleted'));
+            admin_redirect('sales');
+        }
+        if ($inv->sale_status == 'returned') {
+            $this->bpas->send_json(['error' => 1, 'msg' => lang('sale_x_action')]);
+        }
+        if ($inv->return_id) {
+            $this->bpas->send_json(['error' => 1, 'msg' => lang('sale_x_action')]);
+            redirect($_SERVER['HTTP_REFERER']);
+        } else {
+            if ($this->Settings->hide != 0) {
+                if ($this->sales_model->deleteSale($id)) {
+                    $this->session->set_flashdata('message', lang('sale_deleted'));
+                    admin_redirect('sales');
+                }
+            } else {
+                if ($this->sales_model->removeSale($id)) {
+                    $this->session->set_flashdata('message', lang('sale_removed'));
+                    admin_redirect('sales');
+                }   
+            }
+        }
+    }
+
+    public function delete_delivery($id = null)
+    {
+        $this->bpas->checkPermissions(null, true);
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        if ($this->sales_model->deleteDelivery($id)) {
+            $this->bpas->send_json(['error' => 0, 'msg' => lang('delivery_deleted')]);
+        }
+    }
+
+    public function delete_gift_card($id = null)
+    {
+        $this->bpas->checkPermissions();
+        if ($this->sales_model->deleteGiftCard($id)) {
+            $this->bpas->send_json(['error' => 0, 'msg' => lang('gift_card_deleted')]);
+        }
+    }
+
+    public function delete_payment($id = null)
+    {
+        $this->bpas->checkPermissions('delete');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        if ($this->sales_model->deletePayment($id)) {
+            $this->session->set_flashdata('message', lang('payment_deleted'));
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+    }
+
+    public function delete_Downpayment($id = null)
+    {
+        $this->bpas->checkPermissions('delete');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+
+        if ($this->sales_model->deleteDownpayment($id)) {
+            $this->bpas->send_json(['error' => 0, 'msg' => lang('Downpayment_deleted')]);
+           // $this->session->set_flashdata('message', lang('Downpayment_deleted'));
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+    }
+
+    public function delete_return($id = null)
+    {
+        $this->bpas->checkPermissions(null, true);
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        if ($this->sales_model->deleteReturn($id)) {
+            if ($this->input->is_ajax_request()) {
+                $this->bpas->send_json(['error' => 0, 'msg' => lang('return_sale_deleted')]);
+            }
+            $this->session->set_flashdata('message', lang('return_sale_deleted'));
+            admin_redirect('welcome');
+        }
+    }
+
+    /* ------------------------------- */
+
+    public function deliveries()
+    {
+        $this->bpas->checkPermissions();
+
+        $data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+        $bc            = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('deliveries')]];
+        $meta          = ['page_title' => lang('deliveries'), 'bc' => $bc];
+        $this->page_construct('deliveries/deliveries', $meta, $this->data);
+    }
+
+    public function delivery_actions()
+    {
+        if (!$this->Owner && !$this->GP['bulk_actions']) {
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        $this->form_validation->set_rules('form_action', lang('form_action'), 'required');
+        if ($this->form_validation->run() == true) {
+            if (!empty($_POST['val'])) {
+                if ($this->input->post('form_action') == 'delete') {
+                    $this->bpas->checkPermissions('delete_delivery');
+                    foreach ($_POST['val'] as $id) {
+                        $this->sales_model->deleteDelivery($id);
+                    }
+                    $this->session->set_flashdata('message', lang('deliveries_deleted'));
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                if ($this->input->post('form_action') == 'export_excel') {
+                    $this->load->library('excel');
+                    $this->excel->setActiveSheetIndex(0);
+                    $this->excel->getActiveSheet()->setTitle(lang('deliveries'));
+                    $this->excel->getActiveSheet()->SetCellValue('A1', lang('date'));
+                    $this->excel->getActiveSheet()->SetCellValue('B1', lang('do_reference_no'));
+                    $this->excel->getActiveSheet()->SetCellValue('C1', lang('sale_reference_no'));
+                    $this->excel->getActiveSheet()->SetCellValue('D1', lang('customer'));
+                    $this->excel->getActiveSheet()->SetCellValue('E1', lang('address'));
+                    $this->excel->getActiveSheet()->SetCellValue('F1', lang('status'));
+                    $row = 2;
+                    foreach ($_POST['val'] as $id) {
+                        $delivery = $this->sales_model->getDeliveryByID($id);
+                        $this->excel->getActiveSheet()->SetCellValue('A' . $row, $this->bpas->hrld($delivery->date));
+                        $this->excel->getActiveSheet()->SetCellValue('B' . $row, $delivery->do_reference_no);
+                        $this->excel->getActiveSheet()->SetCellValue('C' . $row, $delivery->sale_reference_no);
+                        $this->excel->getActiveSheet()->SetCellValue('D' . $row, $delivery->customer);
+                        $this->excel->getActiveSheet()->SetCellValue('E' . $row, $delivery->address);
+                        $this->excel->getActiveSheet()->SetCellValue('F' . $row, lang($delivery->status));
+                        $row++;
+                    }
+                    $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('E')->setWidth(35);
+                    $filename = 'deliveries_' . date('Y_m_d_H_i_s');
+                    $this->load->helper('excel');
+                    create_excel($this->excel, $filename);
+                }
+            } else {
+                $this->session->set_flashdata('error', lang('no_delivery_selected'));
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+        } else {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+    }
+
+    public function edit_delivery($id = null)
+    {
+        $this->bpas->checkPermissions();
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->form_validation->set_rules('do_reference_no', lang('do_reference_no'), 'required');
+        $this->form_validation->set_rules('sale_reference_no', lang('sale_reference_no'), 'required');
+        $this->form_validation->set_rules('customer', lang('customer'), 'required');
+        $this->form_validation->set_rules('address', lang('address'), 'required');
+        if ($this->form_validation->run() == true) {
+            $dlDetails = [
+                'sale_id'           => $this->input->post('sale_id'),
+                'do_reference_no'   => $this->input->post('do_reference_no'),
+                'sale_reference_no' => $this->input->post('sale_reference_no'),
+                'customer'          => $this->input->post('customer'),
+                'address'           => $this->input->post('address'),
+                'status'            => $this->input->post('status'),
+                'delivered_by'      => $this->input->post('delivered_by'),
+                'received_by'       => $this->input->post('received_by'),
+                'note'              => $this->bpas->clear_tags($this->input->post('note')),
+                'created_by'        => $this->session->userdata('user_id'),
+                'money_collection'  => $this->input->post('collection_status'),
+                'collection_amount' => $this->input->post('collection_amount'),
+            ];
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path']   = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size']      = $this->allowed_file_size;
+                $config['overwrite']     = false;
+                $config['encrypt_name']  = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                $photo                   = $this->upload->file_name;
+                $dlDetails['attachment'] = $photo;
+            }
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date              = $this->bpas->fld(trim($this->input->post('date')));
+                $dlDetails['date'] = $date;
+            }
+        } elseif ($this->input->post('edit_delivery')) {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->updateDelivery($id, $dlDetails)) {
+            $this->session->set_flashdata('message', lang('delivery_updated'));
+            admin_redirect('sales/deliveries');
+        } else {
+            $this->data['error']    = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['drivers']  = $this->site->getDriver();
+            $this->data['get_driver'] = $this->sales_model->getDriverByID($id);
+            $this->data['delivery'] = $this->sales_model->getDeliveryByID($id);
+            $this->data['modal_js'] = $this->site->modal_js();
+            $this->load->view($this->theme . 'deliveries/edit_delivery', $this->data);
+        }
+    }
+
+    public function edit_gift_card($id = null)
+    {
+        $this->bpas->checkPermissions(false, true);
+
+        $this->form_validation->set_rules('card_no', lang('card_no'), 'trim|required');
+        $gc_details = $this->site->getGiftCardByID($id);
+        if ($this->input->post('card_no') != $gc_details->card_no) {
+            $this->form_validation->set_rules('card_no', lang('card_no'), 'is_unique[gift_cards.card_no]');
+        }
+        $this->form_validation->set_rules('value', lang('value'), 'required');
+            //$this->form_validation->set_rules('customer', lang("customer"), 'xss_clean');
+
+        if ($this->form_validation->run() == true) {
+            $gift_card        = $this->site->getGiftCardByID($id);
+            $customer_details = $this->input->post('customer') ? $this->site->getCompanyByID($this->input->post('customer')) : null;
+            $customer         = $customer_details ? $customer_details->company : null;
+            $data             = [
+                'card_no' => $this->input->post('card_no'),
+                'value'                    => $this->input->post('value'),
+                'discount'                 => $this->input->post('discount') ? $this->input->post('discount') : 0,
+                'customer_id'              => $this->input->post('customer') ? $this->input->post('customer') : null,
+                'customer'                 => $customer,
+                'balance'                  => ($this->input->post('value') - $gift_card->value) + $gift_card->balance,
+                'expiry'                   => $this->input->post('expiry') ? $this->bpas->fsd($this->input->post('expiry')) : null,
+            ];
+        } elseif ($this->input->post('edit_gift_card')) {
+            $this->session->set_flashdata('error', validation_errors());
+            admin_redirect('sales/gift_cards');
+        }
+
+        if ($this->form_validation->run() == true && $this->sales_model->updateGiftCard($id, $data)) {
+            $this->session->set_flashdata('message', lang('gift_card_updated'));
+            admin_redirect('sales/gift_cards');
+        } else {
+            $this->data['error']     = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['gift_card'] = $this->site->getGiftCardByID($id);
+            $this->data['id']        = $id;
+            $this->data['modal_js']  = $this->site->modal_js();
+            $this->load->view($this->theme . 'sales/edit_gift_card', $this->data);
+        }
+    }
+    public function email($id = null)
+    {
+        $this->bpas->checkPermissions(false, true);
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $inv = $this->sales_model->getInvoiceByID($id);
+        $this->form_validation->set_rules('to', lang('to') . ' ' . lang('email'), 'trim|required|valid_email');
+        $this->form_validation->set_rules('subject', lang('subject'), 'trim|required');
+        $this->form_validation->set_rules('cc', lang('cc'), 'trim|valid_emails');
+        $this->form_validation->set_rules('bcc', lang('bcc'), 'trim|valid_emails');
+        $this->form_validation->set_rules('note', lang('message'), 'trim');
+
+        if ($this->form_validation->run() == true) {
+            if (!$this->session->userdata('view_right')) {
+                $this->bpas->view_rights($inv->created_by);
+            }
+            $to      = $this->input->post('to');
+            $subject = $this->input->post('subject');
+            if ($this->input->post('cc')) {
+                $cc = $this->input->post('cc');
+            } else {
+                $cc = null;
+            }
+            if ($this->input->post('bcc')) {
+                $bcc = $this->input->post('bcc');
+            } else {
+                $bcc = null;
+            }
+            $customer = $this->site->getCompanyByID($inv->customer_id);
+            $biller   = $this->site->getCompanyByID($inv->biller_id);
+            $this->load->library('parser');
+            $parse_data = [
+                'reference_number' => $inv->reference_no,
+                'contact_person'   => $customer->name,
+                'company'          => $customer->company && $customer->company != '-' ? '(' . $customer->company . ')' : '',
+                'order_link'       => $inv->shop ? shop_url('orders/' . $inv->id . '/' . ($this->loggedIn ? '' : $inv->hash)) : base_url(),
+                'site_link'        => base_url(),
+                'site_name'        => $this->Settings->site_name,
+                'logo'             => '<img src="' . base_url() . 'assets/uploads/logos/' . $biller->logo . '" alt="' . ($biller->company && $biller->company != '-' ? $biller->company : $biller->name) . '"/>',
+            ];
+            
+            $msg      = $this->input->post('note');
+            $message  = $this->parser->parse_string($msg, $parse_data);
+            $paypal   = $this->sales_model->getPaypalSettings();
+            $skrill   = $this->sales_model->getSkrillSettings();
+            $btn_code = '<div id="payment_buttons" class="text-center margin010">';
+            if ($paypal->active == '1' && $inv->grand_total != '0.00') {
+                if (trim(strtolower($customer->country)) == $biller->country) {
+                    $paypal_fee = $paypal->fixed_charges + ($inv->grand_total * $paypal->extra_charges_my / 100);
+                } else {
+                    $paypal_fee = $paypal->fixed_charges + ($inv->grand_total * $paypal->extra_charges_other / 100);
+                }
+                $btn_code .= '<a href="https://www.paypal.com/cgi-bin/webscr?cmd=_xclick&business=' . $paypal->account_email . '&item_name=' . $inv->reference_no . '&item_number=' . $inv->id . '&image_url=' . base_url() . 'assets/uploads/logos/' . $this->Settings->logo . '&amount=' . (($inv->grand_total - $inv->paid) + $paypal_fee) . '&no_shipping=1&no_note=1&currency_code=' . $this->default_currency->code . '&bn=FC-BuyNow&rm=2&return=' . admin_url('sales/view/' . $inv->id) . '&cancel_return=' . admin_url('sales/view/' . $inv->id) . '&notify_url=' . admin_url('payments/paypalipn') . '&custom=' . $inv->reference_no . '__' . ($inv->grand_total - $inv->paid) . '__' . $paypal_fee . '"><img src="' . base_url('assets/images/btn-paypal.png') . '" alt="Pay by PayPal"></a> ';
+            }
+            if ($skrill->active == '1' && $inv->grand_total != '0.00') {
+                if (trim(strtolower($customer->country)) == $biller->country) {
+                    $skrill_fee = $skrill->fixed_charges + ($inv->grand_total * $skrill->extra_charges_my / 100);
+                } else {
+                    $skrill_fee = $skrill->fixed_charges + ($inv->grand_total * $skrill->extra_charges_other / 100);
+                }
+                $btn_code .= ' <a href="https://www.moneybookers.com/app/payment.pl?method=get&pay_to_email=' . $skrill->account_email . '&language=EN&merchant_fields=item_name,item_number&item_name=' . $inv->reference_no . '&item_number=' . $inv->id . '&logo_url=' . base_url() . 'assets/uploads/logos/' . $this->Settings->logo . '&amount=' . (($inv->grand_total - $inv->paid) + $skrill_fee) . '&return_url=' . admin_url('sales/view/' . $inv->id) . '&cancel_url=' . admin_url('sales/view/' . $inv->id) . '&detail1_description=' . $inv->reference_no . '&detail1_text=Payment for the sale invoice ' . $inv->reference_no . ': ' . $inv->grand_total . '(+ fee: ' . $skrill_fee . ') = ' . $this->bpas->formatMoney($inv->grand_total + $skrill_fee) . '&currency=' . $this->default_currency->code . '&status_url=' . admin_url('payments/skrillipn') . '"><img src="' . base_url('assets/images/btn-skrill.png') . '" alt="Pay by Skrill"></a>';
+            }
+
+            $btn_code .= '<div class="clearfix"></div></div>';
+            $message    = $message . $btn_code;
+            $attachment = $this->pdf($id, null, 'S');
+            try {
+                if ($this->bpas->send_email($to, $subject, $message, null, null, $attachment, $cc, $bcc)) {
+                    delete_files($attachment);
+                    $this->session->set_flashdata('message', lang('email_sent'));
+                    admin_redirect('sales');
+                }
+            } catch (Exception $e) {
+                $this->session->set_flashdata('error', $e->getMessage());
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+        } elseif ($this->input->post('send_email')) {
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->session->set_flashdata('error', $this->data['error']);
+            redirect($_SERVER['HTTP_REFERER']);
+        } else {
+            if (file_exists('./themes/' . $this->Settings->theme . '/admin/views/email_templates/sale.html')) {
+                $sale_temp = file_get_contents('themes/' . $this->Settings->theme . '/admin/views/email_templates/sale.html');
+            } else {
+                $sale_temp = file_get_contents('./themes/default/admin/views/email_templates/sale.html');
+            }
+
+            $this->data['subject'] = ['name' => 'subject',
+                'id'                         => 'subject',
+                'type'                       => 'text',
+                'value'                      => $this->form_validation->set_value('subject', lang('invoice') . ' (' . $inv->reference_no . ') ' . lang('from') . ' ' . $this->Settings->site_name),
+            ];
+            $this->data['note'] = ['name' => 'note',
+                'id'                      => 'note',
+                'type'                    => 'text',
+                'value'                   => $this->form_validation->set_value('note', $sale_temp),
+            ];
+            $this->data['customer'] = $this->site->getCompanyByID($inv->customer_id);
+            $this->data['id']       = $id;
+            $this->data['modal_js'] = $this->site->modal_js();
+            $this->load->view($this->theme . 'sales/email', $this->data);
+        }
+    }
+
+    public function email_payment($id = null)
+    {
+        $this->bpas->checkPermissions('payments', true);
+        $payment              = $this->sales_model->getPaymentByID($id);
+        $inv                  = $this->sales_model->getInvoiceByID($payment->sale_id);
+        $this->data['biller'] = $this->site->getCompanyByID($inv->biller_id);
+        $customer             = $this->site->getCompanyByID($inv->customer_id);
+        if (!$customer->email) {
+            $this->bpas->send_json(['msg' => lang('update_customer_email')]);
+        }
+        $this->data['inv']        = $inv;
+        $this->data['payment']    = $payment;
+        $this->data['customer']   = $customer;
+        $this->data['page_title'] = lang('payment_note');
+        $html                     = $this->load->view($this->theme . 'sales/payment_note', $this->data, true);
+
+        $html = str_replace(['<i class="fa fa-2x">&times;</i>', 'modal-', '<p>&nbsp;</p>', '<p style="border-bottom: 1px solid #666;">&nbsp;</p>', '<p>' . lang('stamp_sign') . '</p>'], '', $html);
+        $html = preg_replace("/<img[^>]+\>/i", '', $html);
+            // $html = '<div style="border:1px solid #DDD; padding:10px; margin:10px 0;">'.$html.'</div>';
+
+        $this->load->library('parser');
+        $parse_data = [
+            'stylesheet' => '<link href="' . $this->data['assets'] . 'styles/helpers/bootstrap.min.css" rel="stylesheet"/>',
+            'name'       => $customer->company && $customer->company != '-' ? $customer->company : $customer->name,
+            'email'      => $customer->email,
+            'heading'    => lang('payment_note') . '<hr>',
+            'msg'        => $html,
+            'site_link'  => base_url(),
+            'site_name'  => $this->Settings->site_name,
+            'logo'       => '<img src="' . base_url('assets/uploads/logos/' . $this->Settings->logo) . '" alt="' . $this->Settings->site_name . '"/>',
+        ];
+        $msg     = file_get_contents('./themes/' . $this->Settings->theme . '/admin/views/email_templates/email_con.html');
+        $message = $this->parser->parse_string($msg, $parse_data);
+        $subject = lang('payment_note') . ' - ' . $this->Settings->site_name;
+
+        if ($this->bpas->send_email($customer->email, $subject, $message)) {
+            $this->bpas->send_json(['msg' => lang('email_sent')]);
+        } else {
+            $this->bpas->send_json(['msg' => lang('email_failed')]);
+        }
+    }
+
+    public function get_award_points($id = null)
+    {
+        $this->bpas->checkPermissions('index');
+
+        $row = $this->site->getUser($id);
+        $this->bpas->send_json(['sa_points' => $row->award_points]);
+    }
+
+    public function getDeliveries()
+    {
+        $this->bpas->checkPermissions('deliveries');
+
+        $detail_link = anchor('admin/sales/view_delivery/$1', '<i class="fa fa-file-text-o"></i> ' . lang('delivery_details'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $delivery_note = anchor('admin/sales/delivery_note/$1', '<i class="fa fa-file-text-o"></i> ' . lang('delivery_note'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $delivery_note1 = anchor('admin/sales/delivery_note1/$1', '<i class="fa fa-file-text-o"></i> ' . lang('delivery_note_1'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $delivery_voucher = anchor('admin/sales/delivery_voucher/$1', '<i class="fa fa-file-text-o"></i> ' . lang('delivery_voucher'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $email_link  = anchor('admin/sales/email_delivery/$1', '<i class="fa fa-envelope"></i> ' . lang('email_delivery'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $edit_link   = anchor('admin/sales/edit_delivery/$1', '<i class="fa fa-edit"></i> ' . lang('edit_delivery'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_payment_link     = anchor('admin/deliveries/add_payment/$1', '<i class="fa fa-money"></i> ' . lang('add_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $pdf_link    = anchor('admin/sales/pdf_delivery/$1', '<i class="fa fa-file-pdf-o"></i> ' . lang('download_pdf'));
+        $delete_link = "<a href='#' class='po' title='<b>" . lang('delete_delivery') . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete_delivery/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_delivery') . '</a>';
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+        <ul class="dropdown-menu pull-right" role="menu">
+        <li>' . $detail_link . '</li>
+        <li>' . $delivery_note . '</li>
+        <li>' . $delivery_note1 . '</li>
+        <li>' . $delivery_voucher . '</li>
+        <li>' . $add_payment_link . '</li>
+        <li>' . $edit_link . '</li>
+        <li>' . $pdf_link . '</li>
+        <li>' . $delete_link . '</li>
+        </ul>
+        </div></div>';
+
+        $this->load->library('datatables');
+            //GROUP_CONCAT(CONCAT('Name: ', sale_items.product_name, ' Qty: ', sale_items.quantity ) SEPARATOR '<br>')
+        $this->datatables
+        ->select('deliveries.id as id, deliveries.date, do_reference_no, sale_reference_no, customer,companies.name, deliveries.address, status,
+                if(money_collection=1,collection_amount,0) as money,
+            deliveries.attachment')
+        ->from('deliveries')
+        ->join('sale_items', 'sale_items.sale_id=deliveries.sale_id', 'left')
+        ->join('companies', 'companies.id = deliveries.delivered_by')
+        ->group_by('deliveries.id');
+        $this->datatables->add_column('Actions', $action, 'id');
+
+        echo $this->datatables->generate();
+    }
+
+    public function delivery_note1($id = null)
+    {
+        $this->bpas->checkPermissions('deliveries');
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+
+        $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            //$deli                = $this->sales_model->getDeliveryByID($id);
+        $deli                = $this->sales_model->getDriverByID($id);
+        $sale                = $this->sales_model->getInvoiceByID($deli->sale_id);
+
+
+        if (!$sale) {
+            $this->session->set_flashdata('error', lang('sale_not_found'));
+            $this->bpas->md();
+        }
+
+        $inv = $this->sales_model->getInvoiceByID($deli->sale_id);
+        $this->data['customer']        = $this->site->getCompanyByID($sale->customer_id);
+
+        $this->data['inv']        = $inv;
+        $this->data['delivery']   = $deli;
+        $this->data['biller']     = $this->site->getCompanyByID($sale->biller_id);
+        $this->data['rows']       = $this->sales_model->getAllInvoiceItemsWithDetails($deli->sale_id);
+        $this->data['user']       = $this->site->getUser($deli->created_by);
+        $this->data['sales']       = $this->site->getSaleByID($sale->id);
+        $this->data['page_title'] = lang('delivery_order');
+
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+            //$this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+        $this->load->view($this->theme . 'sales/delivery_note_item1', $this->data);
+    }
+    public function delivery_voucher($id = null)
+    {
+        $this->bpas->checkPermissions('deliveries');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+
+        $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+        //$deli                = $this->sales_model->getDeliveryByID($id);
+        $deli                = $this->sales_model->getDriverByID($id);
+        $sale                = $this->sales_model->getInvoiceByID($deli->sale_id);
+
+
+        if (!$sale) {
+            $this->session->set_flashdata('error', lang('sale_not_found'));
+            $this->bpas->md();
+        }
+
+        $inv                        = $this->sales_model->getInvoiceByID($deli->sale_id);
+        $this->data['customer']        = $this->site->getCompanyByID($sale->customer_id);
+        $this->data['inv']        = $inv;
+        $this->data['delivery']   = $deli;
+        $this->data['biller']     = $this->site->getCompanyByID($sale->biller_id);
+        $this->data['rows']       = $this->sales_model->getAllInvoiceItemsWithDetails($deli->sale_id);
+        $this->data['user']       = $this->site->getUser($deli->created_by);
+        $this->data['sales']       = $this->site->getSaleByID($sale->id);
+        $this->data['page_title'] = lang('delivery_order');
+
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        //$this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+        $this->load->view($this->theme . 'sales/delivery_voucher', $this->data);
+    }
+    /* ------------------------------------------------------------------------ */
+    public function print_multi_deliver($data=null){
+
+        $this->bpas->checkPermissions('deliveries');
+        $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+        $deliveries=[];
+        if($this->input->get('data')){
+            $ids=$this->input->get('data');
+        }
+      
+        $arr_id = explode(",", $ids); 
+        foreach($arr_id as $id){ 
+            $deli                = $this->sales_model->getDriverByID($id);
+            $sale                = $this->sales_model->getInvoiceByID($deli->sale_id);
+            if (!$sale) {
+                $this->session->set_flashdata('error', lang('sale_not_found'));
+                $this->bpas->md();
+            }
+            $inv = $this->sales_model->getInvoiceByID($deli->sale_id);
+
+            $delivery = array(
+                'customer'   => $this->site->getCompanyByID($sale->customer_id),
+                'inv'        => $inv,
+                'delivery'   => $deli,
+                'biller'     => $this->site->getCompanyByID($sale->biller_id),
+                'rows'      => $this->sales_model->getAllInvoiceItemsWithDetails($deli->sale_id),
+                'user'       => $this->site->getUser($deli->created_by),
+                'sales'      => $this->site->getSaleByID($sale->id),
+                'return_sale' => $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null,
+            );
+
+            $deliveries[] = $delivery;
+        }
+
+        $this->data['deliveries'] = $deliveries;
+        // $this->bpas->print_arrays($deliveries);
+
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('view')]];
+        $meta = ['page_title' => lang('print_multi_deliver'), 'bc' => $bc];
+        $this->page_construct('sales/print_multi_deliver', $meta, $this->data);
+    }
+    /* ------------------------------------------------------------------------ */
+    public function getGiftCards()
+    {
+        $this->load->library('datatables');
+        $this->datatables
+        ->select($this->db->dbprefix('gift_cards') . '.id as id, card_no, value, balance, CONCAT(' . $this->db->dbprefix('users') . ".first_name, ' ', " . $this->db->dbprefix('users') . '.last_name) as created_by, customer, expiry', false)
+        ->join('users', 'users.id=gift_cards.created_by', 'left')
+        ->from('gift_cards')
+        ->add_column('Actions', "<div class=\"text-center\"><a href='" . admin_url('sales/view_gift_card/$1') . "' class='tip' title='" . lang('view_gift_card') . "' data-toggle='modal' data-target='#myModal'><i class=\"fa fa-eye\"></i></a> <a href='" . admin_url('sales/topup_gift_card/$1') . "' class='tip' title='" . lang('topup_gift_card') . "' data-toggle='modal' data-target='#myModal'><i class=\"fa fa-dollar\"></i></a> <a href='" . admin_url('sales/edit_gift_card/$1') . "' class='tip' title='" . lang('edit_gift_card') . "' data-toggle='modal' data-target='#myModal'><i class=\"fa fa-edit\"></i></a> <a href='#' class='tip po' title='<b>" . lang('delete_gift_card') . "</b>' data-content=\"<p>" . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete_gift_card/$1') . "'>" . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i></a></div>", 'id');
+            //->unset_column('id');
+
+        echo $this->datatables->generate();
+    }
+    public function getTicket($warehouse_id = null)
+    {
+        $this->bpas->checkPermissions('index');
+        if ($warehouse_id) {
+            $warehouse_ids = explode('-', $warehouse_id);
+        }
+        $user_query     = $this->input->get('user') ? $this->input->get('user') : null;
+        $customer       = $this->input->get('customer') ? $this->input->get('customer') : null;
+        $biller         = $this->input->get('biller') ? $this->input->get('biller') : null;
+        $reference_no   = $this->input->get('reference_no') ? $this->input->get('reference_no') : NULL;
+        $saleman_by     = $this->input->get('saleman_by') ? $this->input->get('saleman_by') : null;
+        $product_id     = $this->input->get('product_id') ? $this->input->get('product_id') : null;
+        $warehouse      = $this->input->get('warehouse') ? $this->input->get('warehouse') : null;
+        $delivered_by   = $this->input->get('delivered_by') ? $this->input->get('delivered_by') : null;
+        $payment_status = $this->input->get('payment_status') ? $this->input->get('payment_status') : NULL;
+        $start_date     = $this->input->get('start_date') ? $this->input->get('start_date') : null;
+        $end_date       = $this->input->get('end_date') ? $this->input->get('end_date') : null;
+
+        $a              = $this->input->get('a') ? $this->input->get('a') : null;
+
+        if ($start_date) {
+            $start_date = $this->bpas->fld($start_date . ' 00:00:00');
+            $end_date   = $this->bpas->fld($end_date . ' 23:59:00');
+        }
+        $view_logo        = anchor('admin/sales/modal_view/$1/logo', '<i class="fa fa-money"></i> ' . lang('print_with_logo'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $detail_link          = anchor('admin/sales/view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('sale_details'));
+        $view_ticket          = anchor('admin/sales/view_ticket/$1', '<i class="fa fa-file-text-o"></i> ' . lang('view_ticket'));
+        $dental_invoice_link  = anchor('admin/sales/dental_clinic/$1', '<i class="fa fa-file-text-o"></i> ' . lang('invoice_dental_clinic'));
+        $add_draw_link        = anchor('admin/sales/add_draw/$1', '<i class="fa fa-pencil"></i> ' . lang('add_draw'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+
+        $return_detail_link   = anchor('admin/sales/return_view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('return_sale') . ' ' . lang('details'));
+        $duplicate_link       = anchor('admin/sales/add?sale_id=$1', '<i class="fa fa-plus-circle"></i> ' . lang('duplicate_sale'));
+        $payments_link        = anchor('admin/sales/payments/$1', '<i class="fa fa-money"></i> ' . lang('view_payments'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_payment_link     = anchor('admin/sales/add_payment/$1', '<i class="fa fa-money"></i> ' . lang('add_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $packagink_link       = anchor('admin/sales/packaging/$1', '<i class="fa fa-archive"></i> ' . lang('packaging'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_delivery_link    = anchor('admin/sales/add_delivery/$1', '<i class="fa fa-truck"></i> ' . lang('add_delivery'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $email_link           = anchor('admin/sales/email/$1', '<i class="fa fa-envelope"></i> ' . lang('email_sale'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $edit_link            = anchor('admin/sales/edit_ticket/$1', '<i class="fa fa-edit"></i> ' . lang('edit_ticket'), 'class="sledit"');
+        $pdf_link             = anchor('admin/sales/pdf/$1', '<i class="fa fa-file-pdf-o"></i> ' . lang('download_pdf'));
+        $return_link          = anchor('admin/sales/return_sale/$1', '<i class="fa fa-angle-double-left"></i> ' . lang('return_sale'));
+     
+        $delete_link          = "<a href='#' class='po' title='<b>" . lang('delete_sale') . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_sale') . '</a>';
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+        <ul class="dropdown-menu pull-right" role="menu">
+            ';
+            if($this->Settings->module_clinic){
+            $action .= '   
+                <li>' . $dental_invoice_link . '</li>
+                <li>' . $add_draw_link . '</li>';
+            }
+           // if($this->Settings->module_hotel_apartment){
+                $action .= '<li>' . $view_ticket . '</li>';
+            //}
+            $action .= '
+                <li>' . $duplicate_link . '</li>
+                <li>' . $payments_link . '</li>
+                <li>' . $add_payment_link . '</li>
+                <li>' . $edit_link . '</li>
+                <li>' . $return_link . '</li>
+                <li>' . $delete_link . '</li>
+        </ul>
+
+        </div></div>';
+
+        $this->load->library('datatables');
+        $this->datatables
+        ->select("{$this->db->dbprefix('sales')}.id as id, 
+            DATE_FORMAT({$this->db->dbprefix('sales')}.date, '%Y-%m-%d %T') as date,
+            from_pl.name as from,
+            to_pl.name as to, 
+            time_o.name as t ,
+            {$this->db->dbprefix('sales_order')}.reference_no as sr_ref, 
+            {$this->db->dbprefix('sales')}.reference_no, 
+            {$this->db->dbprefix('sales')}.biller, 
+            {$this->db->dbprefix('sales')}.customer, 
+            {$this->db->dbprefix('sales')}.sale_status, 
+            {$this->db->dbprefix('sales')}.grand_total, 
+            {$this->db->dbprefix('sales')}.paid, 
+            ({$this->db->dbprefix('sales')}.grand_total - {$this->db->dbprefix('sales')}.paid) as balance,
+            {$this->db->dbprefix('sales')}.payment_status, 
+            {$this->db->dbprefix('sales')}.return_id")
+
+        ->join('projects', 'sales.project_id = projects.project_id', 'left')
+        ->join('sales_order', 'sales.so_id = sales_order.id', 'left')
+        ->join('custom_field from_pl', 'from_pl.id = sales.from_id', 'left') 
+        ->join('custom_field to_pl', 'to_pl.id = sales.destination_id', 'left') 
+        ->join('custom_field time_o', 'time_o.id = sales.time_out_id', 'left') 
+        ->join('users', 'sales.saleman_by = users.id', 'left')
+
+        ->order_by('sales.id', 'desc')
+        ->from('sales')
+        ->where('sales.order_tax',0);
+
+        $this->datatables->where('sales.module_type','express');
+        $this->datatables->where('sales.hide', 1);
+        if ($warehouse_id) {
+            $this->datatables->where('sales.warehouse_id', $warehouse_id);
+        }
+
+        if (!$this->Customer && !$this->Supplier && !$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where_in("FIND_IN_SET(bpas_sales.warehouse_id, '" . $this->session->userdata('warehouse_id') . "')");
+            $this->datatables->where("FIND_IN_SET(bpas_sales.created_by, '" . $this->session->userdata('user_id') . "')");
+        }
+        if ($this->Customer) {
+            $this->datatables->where('projects.customer_id','bpas_projects.customer_id');
+        }
+        if ($this->input->get('shop') == 'yes') {
+            $this->datatables->where('shop', 1);
+        } elseif ($this->input->get('shop') == 'no') {
+            $this->datatables->where('shop !=', 1);
+        }
+
+        if ($this->input->get('attachment') == 'yes') {
+            $this->datatables->where('payment_status !=', 'paid')->where('attachment !=', null);
+        }
+
+        if ($user_query) {
+            $this->datatables->where('sales.created_by', $user_query);
+        }
+        if ($payment_status) {
+            $get_status = explode('_', $payment_status);
+            $this->datatables->where_in('sales.payment_status', $get_status);
+        }
+        if ($reference_no) {
+            $this->datatables->where('sales.reference_no', $reference_no);
+        }
+        // if ($product_id) {
+        //     $this->datatables->where('sales.product_id', $product_id);
+        // }
+        if ($biller) {
+            $this->datatables->where('sales.biller_id', $biller);
+        }
+        if ($customer) {
+            $this->datatables->where('sales.customer_id', $customer);
+        }
+        if ($saleman_by) {
+            $this->datatables->where('sales.saleman_by', $saleman_by);
+        }
+        if ($warehouse) {
+            $this->datatables->where('sales.warehouse_id', $warehouse);
+        }
+
+        if ($a || $a == 'empty') {
+            $alert_ids = explode('-', $a);
+            $alert_id  = $a;
+
+            if (count($alert_ids) > 1) {
+                // $this->datatables->where('sales.payment_term <>', 0);
+                // $this->datatables->where('DATE_SUB(bpas_sales.date, INTERVAL 1 DAY) <= CURDATE()');
+                $this->datatables->where_in('sales.id', $alert_ids);
+            } else {
+                // $this->datatables->where('sales.payment_term <>', 0);
+                // $this->datatables->where('DATE_SUB(bpas_sales.date, INTERVAL 1 DAY) <= CURDATE()');
+                $this->datatables->where('sales.id', $alert_id);
+            }
+        }
+    
+        if ($start_date) {
+            $this->datatables->where($this->db->dbprefix('sales') . '.date BETWEEN "' . $start_date . '" and "' . $end_date . '"');
+        }
+        $this->datatables->where($this->db->dbprefix('sales') . '.pos !=', 1); // ->where('sale_status !=', 'returned');
+        $this->datatables->add_column('Actions', $action, 'id');
+        echo $this->datatables->generate();
+    }
+    public function gift_card_actions()
+    {
+        if (!$this->Owner && !$this->GP['bulk_actions']) {
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+
+        $this->form_validation->set_rules('form_action', lang('form_action'), 'required');
+
+        if ($this->form_validation->run() == true) {
+            if (!empty($_POST['val'])) {
+                if ($this->input->post('form_action') == 'delete') {
+                    $this->bpas->checkPermissions('delete_gift_card');
+                    foreach ($_POST['val'] as $id) {
+                        $this->sales_model->deleteGiftCard($id);
+                    }
+                    $this->session->set_flashdata('message', lang('gift_cards_deleted'));
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+
+                if ($this->input->post('form_action') == 'export_excel') {
+                    $this->load->library('excel');
+                    $this->excel->setActiveSheetIndex(0);
+                    $this->excel->getActiveSheet()->setTitle(lang('gift_cards'));
+                    $this->excel->getActiveSheet()->SetCellValue('A1', lang('card_no'));
+                    $this->excel->getActiveSheet()->SetCellValue('B1', lang('value'));
+                    $this->excel->getActiveSheet()->SetCellValue('C1', lang('customer'));
+
+                    $row = 2;
+                    foreach ($_POST['val'] as $id) {
+                        $sc = $this->site->getGiftCardByID($id);
+                        $this->excel->getActiveSheet()->SetCellValue('A' . $row, $sc->card_no);
+                        $this->excel->getActiveSheet()->SetCellValue('B' . $row, $sc->value);
+                        $this->excel->getActiveSheet()->SetCellValue('C' . $row, $sc->customer);
+                        $row++;
+                    }
+
+                    $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                    $this->excel->getDefaultStyle()->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $filename = 'gift_cards_' . date('Y_m_d_H_i_s');
+                    $this->load->helper('excel');
+                    create_excel($this->excel, $filename);
+                }
+            } else {
+                $this->session->set_flashdata('error', lang('no_gift_card_selected'));
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+        } else {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+    }
+
+    /* ------------------------------------ Gift Cards ---------------------------------- */
+
+    public function gift_cards()
+    {
+        $this->bpas->checkPermissions();
+        $this->data['error'] = validation_errors() ? validation_errors() : $this->session->flashdata('error');
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('gift_cards')]];
+        $meta = ['page_title' => lang('gift_cards'), 'bc' => $bc];
+        $this->page_construct('sales/gift_cards', $meta, $this->data);
+    }
+
+    public function index_by_wh($warehouse_id = null)
+    {
+        $this->bpas->checkPermissions();
+        $count = explode(',', $this->session->userdata('warehouse_id'));
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        if ($this->Owner || $this->Admin || !$this->session->userdata('warehouse_id')) {
+            $this->data['warehouses']   = $this->site->getAllWarehouses();
+            $this->data['warehouse_id'] = $warehouse_id;
+            $this->data['warehouse']    = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+        } else {
+            if (count($count)>1) {
+                $this->data['warehouses']   = $this->site->getAllWarehouses();
+            } else {
+                $this->data['warehouses']   = null;
+            }
+            $this->data['count_warehouses'] = $count;
+            $this->data['warehouse_id'] = $warehouse_id;
+            $this->data['warehouse']    = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+        }
+        $this->data['alert_id'] = isset($_GET['alert_id']) ? ($_GET['alert_id'] !== '' ? $_GET['alert_id'] : 'empty')  : null;
+        $biller_id = $this->session->userdata('biller_id');
+        $this->data['users']        = $this->site->getStaff();
+        $this->data['products']     = $this->site->getProducts();
+        $this->data['warehouses']   = $this->site->getAllWarehouses();
+        $this->data['billers']      = $this->site->getAllCompanies('biller');
+        $this->data['user_billers'] = $this->site->getCompanyByID($biller_id);
+        $this->data['drivers']      = $this->site->getDriver();
+        
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => '#', 'page' => lang('sales')]];
+        $meta = ['page_title' => lang('sales'), 'bc' => $bc];
+        $this->page_construct('sales/index', $meta, $this->data);
+    }
+
+    public function index($biller_id = null)
+    {
+        $this->bpas->checkPermissions();
+        $user = $this->site->getUser($this->session->userdata('user_id'));
+        if ($this->Settings->multi_biller) {
+            $count = $user->multi_biller ? explode(',', $user->multi_biller) : null;         
+        } else {
+            $count = $user->biller_id ? ((array) $user->biller_id) : null;
+        }
+
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        if ($this->Owner || $this->Admin || empty($count)) {
+            $this->data['billers']   = $this->site->getAllCompanies('biller');
+            $this->data['biller_id'] = $biller_id;
+            $this->data['biller']    = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        } else {
+            if (count($count) > 1) {
+                $this->data['billers']   = $this->site->getAllCompanies('biller');
+            } else {
+                $this->data['billers']   = null;
+            }
+            $this->data['count_billers'] = $count;
+            $this->data['user_biller']   = (isset($count) && count($count) == 1) ? $this->site->getCompanyByID($this->session->userdata('biller_id')) : null;
+            $this->data['biller_id']     = $biller_id;
+            $this->data['biller']        = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        }
+
+        $this->data['alert_id']         = isset($_GET['alert_id']) ? ($_GET['alert_id'] !== '' ? $_GET['alert_id'] : 'empty')  : null;
+        $this->data['users']            = $this->site->getStaff();
+        $this->data['products']         = $this->site->getProducts();
+        $this->data['warehouses']       = $this->site->getAllWarehouses();
+        $this->data['count_warehouses'] = explode(',', $this->session->userdata('warehouse_id'));
+        $this->data['drivers']          = $this->site->getDriver();
+
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => '#', 'page' => lang('sales')]];
+        $meta = ['page_title' => lang('sales'), 'bc' => $bc];
+        $this->page_construct('sales/index', $meta, $this->data);
+    }
+    public function getSales($biller_id = null)
+    {
+        $this->bpas->checkPermissions('index');
+        if ((!$this->Owner && !$this->Admin) && !$biller_id) {
+            $user = $this->site->getUser($this->session->userdata('user_id'));
+            if ($this->Settings->multi_biller) {
+                $biller_id = $user->multi_biller ? explode(',', $user->multi_biller) : null;         
+            } else {
+                $biller_id = $user->biller_id ? ((array) $user->biller_id) : null;
+            }
+        }
+        $user_query     = $this->input->get('user') ? $this->input->get('user') : null;
+        $customer       = $this->input->get('customer') ? $this->input->get('customer') : null;
+        $biller         = $this->input->get('biller') ? $this->input->get('biller') : null;
+        $reference_no   = $this->input->get('reference_no') ? $this->input->get('reference_no') : NULL;
+        $saleman_by     = $this->input->get('saleman_by') ? $this->input->get('saleman_by') : null;
+        $product_id     = $this->input->get('product_id') ? $this->input->get('product_id') : null;
+        $warehouse      = $this->input->get('warehouse') ? $this->input->get('warehouse') : null;
+        $delivered_by   = $this->input->get('delivered_by') ? $this->input->get('delivered_by') : null;
+        $payment_status = $this->input->get('payment_status') ? $this->input->get('payment_status') : NULL;
+        $start_date     = $this->input->get('start_date') ? $this->input->get('start_date') : null;
+        $end_date       = $this->input->get('end_date') ? $this->input->get('end_date') : null;
+        $a              = $this->input->get('a') ? $this->input->get('a') : null;
+        if ($start_date) {
+            $start_date = $this->bpas->fld($start_date . ' 00:00:00');
+            $end_date   = $this->bpas->fld($end_date . ' 23:59:00');
+        }
+        $installment_link = '';
+        if($this->Settings->module_installment && (isset($this->GP['installments-add']) || ($this->Owner || $this->Admin))){
+            $installment_link = anchor('admin/installments/add/$1', '<i class="fa fa-plus-circle"></i> ' . lang('add_installment'),'class="add_installment"');
+        }
+        $view_receipt         = anchor('admin/pos/view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('view_receipt'));
+        $view_logo            = anchor('admin/sales/modal_view/$1/logo', '<i class="fa fa-money"></i> ' . lang('print_with_logo'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $detail_link          = anchor('admin/sales/modal_view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('sale_details'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $view_ticket          = anchor('admin/sales/view_ticket/$1', '<i class="fa fa-file-text-o"></i> ' . lang('view_ticket'));
+        $dental_invoice_link  = '';$add_draw_link = '';
+        if ($this->Settings->module_clinic) {
+            $dental_invoice_link  = anchor('admin/sales/dental_clinic/$1', '<i class="fa fa-file-text-o"></i> ' . lang('invoice_dental_clinic'));
+            $add_draw_link        = anchor('admin/sales/add_draw/$1', '<i class="fa fa-pencil"></i> ' . lang('add_draw'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        }
+        $return_detail_link   = anchor('admin/sales/return_view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('return_sale') . ' ' . lang('details'));
+        $duplicate_link       = anchor('admin/sales/add?sale_id=$1', '<i class="fa fa-plus-circle"></i> ' . lang('duplicate_sale'));
+        $payments_link        = anchor('admin/sales/payments/$1', '<i class="fa fa-money"></i> ' . lang('view_payments'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_payment_link     = anchor('admin/sales/add_payment/$1', '<i class="fa fa-money"></i> ' . lang('add_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $down_payments_link   = anchor('admin/sales/view_down_payments/$1', '<i class="fa fa-money"></i> ' . lang('view_down_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_Downpayment_link = anchor('admin/sales/add_downpayment/$1', '<i class="fa fa-money"></i> ' . lang('add_down_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $packagink_link       = anchor('admin/sales/packaging/$1', '<i class="fa fa-archive"></i> ' . lang('packaging'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_delivery_link='';
+        if ($this->Settings->delivery) {
+            $add_delivery_link    = anchor('admin/deliveries/add/0/$1', '<i class="fa fa-truck"></i> ' . lang('add_delivery'));
+        }
+        $add_credit_note_link = anchor('admin/sales/add_credit_note/$1', '<i class="fa fa-truck"></i> ' . lang('add_credit_note'));
+        $email_link           = anchor('admin/sales/email/$1', '<i class="fa fa-envelope"></i> ' . lang('email_sale'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $edit_link            = anchor('admin/sales/edit/$1', '<i class="fa fa-edit"></i> ' . lang('edit_sale'));
+        $request_edit_link    = anchor('admin/sales/add_request_edit_sale/$1', '<i class="fa fa-file-text"></i> ' . lang('request_edit_sale'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $pdf_link             = anchor('admin/sales/pdf/$1', '<i class="fa fa-file-pdf-o"></i> ' . lang('download_pdf'));
+        $return_link          = anchor('admin/sales/return_sale/$1', '<i class="fa fa-angle-double-left"></i> ' . lang('return_sale'));
+        $view_agreement       = anchor('admin/sales/view_agreement/$1', '<i class="fa fa-file-text-o"></i> ' . lang('agreement'));
+        $add_warranty_link    = '';
+        if ($this->Settings->maintenance) {
+            $add_warranty_link = anchor('admin/sales/add_maintenance/$1', '<i class="fa fa-money"></i> ' . lang('add_maintenance'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        }
+
+        $delete_link = "<a href='#' class='po' title='<b>" . lang('delete_sale') . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger' href='" . admin_url('sales/delete/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_sale') . '</a>';
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+        <ul class="dropdown-menu pull-right" role="menu">
+            <li>' . $detail_link . '</li>
+            <li>' . $view_receipt . '</li>
+            <li>' . $view_logo . '</li> 
+            <li>' . $dental_invoice_link . '</li>
+            <li>' . $add_draw_link . '</li>';
+            if ($this->Settings->module_hotel_apartment) {
+                $action .= '<li>' . $view_ticket . '</li>';
+            }
+            $action .= '
+                <li>' . $duplicate_link . '</li>
+                <li>' . $payments_link . '</li>
+                <li class="add_payment">' . $add_payment_link . '</li>
+                <li>' . $add_delivery_link . '</li>
+                <li class="hide">' . $down_payments_link . '</li>
+                <li class="add_downpayment hide">' . $add_Downpayment_link . '</li>
+                <li>' . $installment_link . '</li>
+                <li class="edit">' . $edit_link . '</li>
+                <li class="edit hide">' . $request_edit_link . '</li>
+                <li class="hide_">' . $add_credit_note_link . '</li>
+                <li class="hideb">' . $packagink_link . '</li>
+                <li>' . $pdf_link . '</li>
+                <li>' . $email_link . '</li>
+                <li>' . $view_agreement . '</li>
+                <li>' . $add_warranty_link . '</li>
+                <li>' . $return_link . '</li>
+                <li class="delete">' . $delete_link . '</li>
+            </ul>
+        </div></div>';
+        $ds = "( SELECT d.sale_id,d.delivered_by,d.status,c.name as delivery_name from {$this->db->dbprefix('deliveries')} d LEFT JOIN {$this->db->dbprefix('companies')} c on d.delivered_by = c.id GROUP BY d.sale_id) FSI";
+        $this->load->library('datatables');
+        $this->datatables->select("
+                {$this->db->dbprefix('sales')}.id as id, 
+                DATE_FORMAT({$this->db->dbprefix('sales')}.date, '%Y-%m-%d %T') as date,
+                {$this->db->dbprefix('sales')}.reference_no,
+                {$this->db->dbprefix('sales')}.biller, 
+                {$this->db->dbprefix('sales')}.customer, 
+                project_name,
+                FSI.delivery_name as delivered_by,
+                CONCAT({$this->db->dbprefix('users')}.first_name, ' ', {$this->db->dbprefix('users')}.last_name) as saleman_by,
+                {$this->db->dbprefix('sales_order')}.reference_no as sr_ref, 
+                {$this->db->dbprefix('sales')}.sale_status, 
+                {$this->db->dbprefix('sales')}.grand_total, 
+                {$this->db->dbprefix('sales')}.paid, 
+                ({$this->db->dbprefix('sales')}.grand_total - {$this->db->dbprefix('sales')}.paid) as balance,
+                {$this->db->dbprefix('sales')}.payment_status, 
+                {$this->db->dbprefix('sales')}.delivery_status, 
+                {$this->db->dbprefix('sales')}.return_id")
+            ->join('projects', 'sales.project_id = projects.project_id', 'left')
+            ->join('sales_order', 'sales.so_id = sales_order.id', 'left')
+            ->join('users', 'sales.saleman_by = users.id', 'left')
+            // ->join('deliveries', 'sales.id = deliveries.sale_id', 'left')
+            // ->join('companies', 'sales.customer_id = companies.id', 'left')
+            // ->join('companies', 'FSI.delivered_by = companies.id', 'left')
+            ->join($ds, 'FSI.sale_id=sales.id', 'left')
+            ->order_by('sales.id', 'desc')
+            ->from('sales')
+            ->where('sales.store_sale !=', 1);
+
+        $this->datatables->where('sales.module_type','inventory');
+        if ((!$this->Owner && !$this->Admin) && $this->GP['view_tax']) {
+            $this->datatables->where('sales.declare_tax', 1 );
+        }
+        $this->datatables->where('sales.hide', 1);
+        if ($biller_id) {
+            $this->datatables->where_in('sales.biller_id', $biller_id);
+        }
+        if (!$this->Customer && !$this->Supplier && !$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where("FIND_IN_SET(bpas_sales.created_by, '" . $this->session->userdata('user_id') . "')");
+        }
+        if ($this->Customer) {
+            $this->datatables->where('projects.customer_id', 'bpas_projects.customer_id');
+        }
+        if ($this->input->get('shop') == 'yes') {
+            $this->datatables->where('sales.shop', 1);
+        } elseif ($this->input->get('shop') == 'no') {
+            $this->datatables->where('sales.shop !=', 1);
+        }
+        /*
+        if ($this->input->get('delivery') == 'no') {
+            $this->datatables->join('deliveries', 'deliveries.sale_id=sales.id', 'left')
+            ->where('sales.sale_status', 'completed')->where('sales.payment_status', 'paid')
+            ->where("({$this->db->dbprefix('deliveries')}.status != 'delivered' OR {$this->db->dbprefix('deliveries')}.status IS NULL)", null);
+        }*/
+        if ($this->input->get('attachment') == 'yes') {
+            $this->datatables->where('payment_status !=', 'paid')->where('attachment !=', null);
+        }
+        // if ($user_query) {
+        //     $this->datatables->where('sales.created_by', $user_query);
+        // }
+        if ($payment_status) {
+            $get_status = explode('_', $payment_status);
+            $this->datatables->where_in('sales.payment_status', $get_status);
+        }
+        if ($reference_no) {
+            $this->datatables->where('sales.reference_no', $reference_no);
+        }
+        // if ($product_id) {
+        //     $this->datatables->where('sales.product_id', $product_id);
+        // }
+        if ($biller) {
+            $this->datatables->where('sales.biller_id', $biller);
+        }
+        if ($customer) {
+            $this->datatables->where('sales.customer_id', $customer);
+        }
+        if ($saleman_by) {
+            $this->datatables->where('sales.saleman_by', $saleman_by);
+        }
+        if ($warehouse) {
+            $this->datatables->where('sales.warehouse_id', $warehouse);
+        }
+        /*
+        if ($delivered_by) {
+            $this->datatables->where('deliveries.delivered_by', $delivered_by);
+        }*/
+        // if ($start_date ) {
+        //  $pp .= " AND p.date >= '{$start_date}' AND p.date < '{$end_date}' ";
+        // $this->datatables->where($this->db->dbprefix('sales').'.date BETWEEN "' . $start_date . ' 00:00:00" and "' . $end_date . '23:59:00"');
+        // $this->datatables->where("sales.date>='{$start_date}'AND sales.date < '{$end_date}'");
+        // }
+        if ($a || $a == 'empty') {
+            $alert_ids = explode('-', $a);
+            $alert_id  = $a;
+            if (count($alert_ids) > 1) {
+                // $this->datatables->where('sales.payment_term <>', 0);
+                // $this->datatables->where('DATE_SUB(bpas_sales.date, INTERVAL 1 DAY) <= CURDATE()');
+                $this->datatables->where_in('sales.id', $alert_ids);
+            } else {
+                // $this->datatables->where('sales.payment_term <>', 0);
+                // $this->datatables->where('DATE_SUB(bpas_sales.date, INTERVAL 1 DAY) <= CURDATE()');
+                $this->datatables->where('sales.id', $alert_id);
+            }
+        }
+        if ($start_date) {
+            $this->datatables->where($this->db->dbprefix('sales') . '.date BETWEEN "' . $start_date . '" and "' . $end_date . '"');
+        }
+        $this->datatables->where($this->db->dbprefix('sales') . '.pos !=', 1);
+        $this->datatables->add_column('Actions', $action, 'id');
+        echo $this->datatables->generate();
+    }
+    public function taxs($biller_id = null)
+    {
+        $this->bpas->checkPermissions('view_sale_declare', true);
+        $user = $this->site->getUser($this->session->userdata('user_id'));
+        if ($this->Settings->multi_biller) {
+            $count = $user->multi_biller ? explode(',', $user->multi_biller) : null;         
+        } else {
+            $count = $user->biller_id ? ((array) $user->biller_id) : null;
+        }
+
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        if ($this->Owner || $this->Admin || empty($count)) {
+            $this->data['billers']   = $this->site->getAllCompanies('biller');
+            $this->data['biller_id'] = $biller_id;
+            $this->data['biller']    = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        } else {
+            if (count($count) > 1) {
+                $this->data['billers']   = $this->site->getAllCompanies('biller');
+            } else {
+                $this->data['billers']   = null;
+            }
+            $this->data['count_billers'] = $count;
+            $this->data['user_biller']   = (isset($count) && count($count) == 1) ? $this->site->getCompanyByID($this->session->userdata('biller_id')) : null;
+            $this->data['biller_id']     = $biller_id;
+            $this->data['biller']        = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        }
+
+        $this->data['alert_id']         = isset($_GET['alert_id']) ? ($_GET['alert_id'] !== '' ? $_GET['alert_id'] : 'empty')  : null;
+        $this->data['users']            = $this->site->getStaff();
+        $this->data['products']         = $this->site->getProducts();
+        $this->data['warehouses']       = $this->site->getAllWarehouses();
+        $this->data['count_warehouses'] = explode(',', $this->session->userdata('warehouse_id'));
+        $this->data['drivers']          = $this->site->getDriver();
+
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => '#', 'page' => lang('sales')]];
+        $meta = ['page_title' => lang('sales'), 'bc' => $bc];
+        $this->page_construct('sales/list_declare_invoice', $meta, $this->data);
+    }
+    public function getSalesDeclareTax($biller_id = null)
+    {
+        $this->bpas->checkPermissions('view_sale_declare', true);
+        if ((!$this->Owner && !$this->Admin) && !$biller_id) {
+            $user = $this->site->getUser($this->session->userdata('user_id'));
+            if ($this->Settings->multi_biller) {
+                $biller_id = $user->multi_biller ? explode(',', $user->multi_biller) : null;         
+            } else {
+                $biller_id = $user->biller_id ? ((array) $user->biller_id) : null;
+            }
+        }
+        $user_query     = $this->input->get('user') ? $this->input->get('user') : null;
+        $customer       = $this->input->get('customer') ? $this->input->get('customer') : null;
+        $biller         = $this->input->get('biller') ? $this->input->get('biller') : null;
+        $reference_no   = $this->input->get('reference_no') ? $this->input->get('reference_no') : NULL;
+        $saleman_by     = $this->input->get('saleman_by') ? $this->input->get('saleman_by') : null;
+        $product_id     = $this->input->get('product_id') ? $this->input->get('product_id') : null;
+        $warehouse      = $this->input->get('warehouse') ? $this->input->get('warehouse') : null;
+        $delivered_by   = $this->input->get('delivered_by') ? $this->input->get('delivered_by') : null;
+        $payment_status = $this->input->get('payment_status') ? $this->input->get('payment_status') : NULL;
+        $start_date     = $this->input->get('start_date') ? $this->input->get('start_date') : null;
+        $end_date       = $this->input->get('end_date') ? $this->input->get('end_date') : null;
+        $a              = $this->input->get('a') ? $this->input->get('a') : null;
+        if ($start_date) {
+            $start_date = $this->bpas->fld($start_date . ' 00:00:00');
+            $end_date   = $this->bpas->fld($end_date . ' 23:59:00');
+        }
+        $view_receipt         = anchor('admin/pos/view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('view_receipt'));
+        $view_logo            = anchor('admin/sales/modal_view/$1/logo', '<i class="fa fa-money"></i> ' . lang('print_with_logo'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $return_detail_link   = anchor('admin/sales/return_view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('return_sale') . ' ' . lang('details'));
+        $duplicate_link       = anchor('admin/sales/add?sale_id=$1', '<i class="fa fa-plus-circle"></i> ' . lang('duplicate_sale'));
+        $payments_link        = anchor('admin/sales/payments/$1', '<i class="fa fa-money"></i> ' . lang('view_payments'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_payment_link     = anchor('admin/sales/add_payment/$1', '<i class="fa fa-money"></i> ' . lang('add_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $edit_link            = anchor('admin/sales/edit/$1', '<i class="fa fa-edit"></i> ' . lang('edit_sale'));
+        $return_link          = anchor('admin/sales/return_sale/$1', '<i class="fa fa-angle-double-left"></i> ' . lang('return_sale'));
+
+ 
+        $delete_link = "<a href='#' class='po' title='<b>" . lang('delete_sale') . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger' href='" . admin_url('sales/delete/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_sale') . '</a>';
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+        <ul class="dropdown-menu pull-right" role="menu">
+                <li>' . $payments_link . '</li>
+            </ul>
+        </div></div>';
+        $this->load->library('datatables');
+        $this->datatables->select("
+                {$this->db->dbprefix('sales')}.id as id, 
+                DATE_FORMAT({$this->db->dbprefix('sales')}.date, '%Y-%m-%d %T') as date,
+                {$this->db->dbprefix('tax_items')}.tax_reference as reference_no,
+                {$this->db->dbprefix('sales')}.biller, 
+                {$this->db->dbprefix('sales')}.customer, 
+                CONCAT({$this->db->dbprefix('users')}.first_name, ' ', {$this->db->dbprefix('users')}.last_name) as saleman_by,
+                {$this->db->dbprefix('sales')}.sale_status, 
+                {$this->db->dbprefix('sales')}.grand_total, 
+                {$this->db->dbprefix('sales')}.paid, 
+                ({$this->db->dbprefix('sales')}.grand_total - {$this->db->dbprefix('sales')}.paid) as balance,
+                {$this->db->dbprefix('sales')}.payment_status, 
+                {$this->db->dbprefix('sales')}.return_id")
+            ->join('projects', 'sales.project_id = projects.project_id', 'left')
+            ->join('sales_order', 'sales.so_id = sales_order.id', 'left')
+            ->join('users', 'sales.saleman_by = users.id', 'left')
+            ->join('tax_items', 'tax_items.transaction_id = sales.id', 'left')
+            ->order_by('sales.id', 'desc')
+            ->from('sales')
+            ->where('sales.store_sale !=', 1);
+
+        $this->datatables->where('sales.module_type','inventory');
+        $this->datatables->where('sales.declare_tax', 1 );
+        $this->datatables->where('sales.hide', 1);
+        if ($biller_id) {
+            $this->datatables->where_in('sales.biller_id', $biller_id);
+        }
+        if (!$this->Customer && !$this->Supplier && !$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where("FIND_IN_SET(bpas_sales.created_by, '" . $this->session->userdata('user_id') . "')");
+        }
+        if ($this->Customer) {
+            $this->datatables->where('projects.customer_id', 'bpas_projects.customer_id');
+        }
+        if ($this->input->get('shop') == 'yes') {
+            $this->datatables->where('sales.shop', 1);
+        } elseif ($this->input->get('shop') == 'no') {
+            $this->datatables->where('sales.shop !=', 1);
+        }
+        if ($this->input->get('attachment') == 'yes') {
+            $this->datatables->where('payment_status !=', 'paid')->where('attachment !=', null);
+        }
+        if ($payment_status) {
+            $get_status = explode('_', $payment_status);
+            $this->datatables->where_in('sales.payment_status', $get_status);
+        }
+        if ($reference_no) {
+            $this->datatables->where('sales.reference_no', $reference_no);
+        }
+        if ($biller) {
+            $this->datatables->where('sales.biller_id', $biller);
+        }
+        if ($customer) {
+            $this->datatables->where('sales.customer_id', $customer);
+        }
+        if ($saleman_by) {
+            $this->datatables->where('sales.saleman_by', $saleman_by);
+        }
+        if ($warehouse) {
+            $this->datatables->where('sales.warehouse_id', $warehouse);
+        }
+        if ($a || $a == 'empty') {
+            $alert_ids = explode('-', $a);
+            $alert_id  = $a;
+            if (count($alert_ids) > 1) {
+                // $this->datatables->where('sales.payment_term <>', 0);
+                // $this->datatables->where('DATE_SUB(bpas_sales.date, INTERVAL 1 DAY) <= CURDATE()');
+                $this->datatables->where_in('sales.id', $alert_ids);
+            } else {
+                // $this->datatables->where('sales.payment_term <>', 0);
+                // $this->datatables->where('DATE_SUB(bpas_sales.date, INTERVAL 1 DAY) <= CURDATE()');
+                $this->datatables->where('sales.id', $alert_id);
+            }
+        }
+        if ($start_date) {
+            $this->datatables->where($this->db->dbprefix('sales') . '.date BETWEEN "' . $start_date . '" and "' . $end_date . '"');
+        }
+        $this->datatables->where($this->db->dbprefix('sales') . '.pos !=', 1);
+        $this->datatables->add_column('Actions', $action, 'id');
+        echo $this->datatables->generate();
+    }
+    public function modal_view($id = null, $logo=null,$tax_ref=null)
+    {
+        $this->bpas->checkPermissions('index', true);
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $inv                 = $this->sales_model->getInvoiceByID($id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by, true);
+        }
+        $this->data['tax_declare']  = $tax_ref ? $this->sales_model->getTaxDeclareBySaleID($id) : null;
+
+        $this->data['customer']    = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['biller']      = $this->site->getCompanyByID($inv->biller_id);
+
+        $this->data['created_by']  = $this->site->getUser($inv->created_by);
+        $this->data['updated_by']  = $inv->updated_by ? $this->site->getUser($inv->updated_by) : null;
+        $this->data['warehouse']   = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['inv']         = $inv;
+        $this->data['zone']        = $this->site->getZoneByID($inv->zone_id);
+        $this->data['currency']    = $this->site->getCurrencyByCode($inv->currency);
+        $this->data['rows']        = $this->sales_model->getAllInvoiceItems($id);
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        $this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+        $this->data['islogo']         = $logo;
+        $this->data['print'] = $this->site->Assgin_Print('Sale',$inv->id);
+        $this->data['sold_by']  = $this->site->getsaleman($inv->saleman_by);
+        $this->data['TotalSalesDue'] = $this->sales_model->getTotalSalesDue($inv->customer_id,'');
+        $this->load->view($this->theme . 'sales/modal_view', $this->data);
+    }
+
+    public function view_a5($id = null)
+    {
+        $this->bpas->checkPermissions('index', true);
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $inv                 = $this->sales_model->getInvoiceByID($id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by, true);
+        }
+        $this->data['customer']    = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['biller']      = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['created_by']  = $this->site->getUser($inv->created_by);
+        $this->data['updated_by']  = $inv->updated_by ? $this->site->getUser($inv->updated_by) : null;
+        $this->data['warehouse']   = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['inv']         = $inv;
+        $this->data['rows']        = $this->sales_model->getAllInvoiceItems($id);
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        $this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+
+        $this->load->view($this->theme . 'sales/view_a5', $this->data);
+    }
+
+    public function view_a4($id = null)
+    {
+        $this->bpas->checkPermissions('index', true);
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $inv                 = $this->sales_model->getInvoiceByID($id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by, true);
+        }
+        $this->data['customer']    = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['biller']      = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['created_by']  = $this->site->getUser($inv->created_by);
+        $this->data['updated_by']  = $inv->updated_by ? $this->site->getUser($inv->updated_by) : null;
+        $this->data['warehouse']   = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['inv']         = $inv;
+        $this->data['rows']        = $this->sales_model->getAllInvoiceItems($id);
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        $this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+
+        $this->load->view($this->theme . 'sales/view_a4', $this->data);
+    }
+
+    public function packaging($id)
+    {
+        $sale = $this->sales_model->getInvoiceByID($id);
+        $this->data['returned'] = false;
+        if ($sale->sale_status == 'returned' || $sale->return_id) {
+            $this->data['returned'] = true;
+        }
+        $items = $this->sales_model->getAllInvoiceItems($sale->id);
+        foreach ($items as $item) {
+            $packaging[] = [
+                'name'     => $item->product_code . ' - ' . $item->product_name . (($item->expiry != "0000-00-00" && $item->expiry != null) ? ' (' . $item->expiry . ')' : ''),
+                'quantity' => $item->unit_quantity,
+                'unit'     => $item->name_unit,
+                'rack'     => $this->sales_model->getItemRack($item->product_id, $sale->warehouse_id),
+            ];
+        }
+        $this->data['customer']  = $this->site->getCompanyByID($sale->customer_id);
+        $this->data['warehouse'] = $this->site->getWarehouseByID($sale->warehouse_id);
+        $this->data['packaging'] = $packaging;
+        $this->data['sale']      = $sale;
+
+        $this->load->view($this->theme . 'sales/packaging', $this->data);
+    }
+
+    public function payments($id = null)
+    {
+        $this->bpas->checkPermissions(false, true);
+        $this->data['payments'] = $this->sales_model->getInvoicePayments($id);
+        $this->data['inv']      = $this->sales_model->getInvoiceByID($id);
+        $this->load->view($this->theme . 'sales/payments', $this->data);
+    }
+
+    public function add_payment($id = null,$down_payment_id=null)
+    {
+        $this->bpas->checkPermissions('payments', true);
+        $this->load->helper('security');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        if ($this->input->get('payment_term')) {
+            $payment_term = $this->input->get('payment_term');
+        } else {
+            $payment_term = null;
+        }
+
+        $sale = $this->sales_model->getInvoiceByID($id);
+        // if ($this->Settings->payment_after_delivery &&  $sale->delivery_status== '') {
+        //     $this->session->set_flashdata('error', lang('please_add_delivery_first'));
+        //     $this->bpas->md();
+        // }
+        $balance= $sale->grand_total - $sale->paid;
+        if ($sale->payment_status == 'paid' && $sale->grand_total == $sale->paid) {
+            $this->session->set_flashdata('error', lang('sale_already_paid'));
+            $this->bpas->md();
+        }
+        $this->form_validation->set_rules('paid_by', lang('paid_by'), 'required');
+        $this->form_validation->set_rules('userfile', lang('attachment'), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+            $paid_by = $this->site->getCashAccountByCode($this->input->post('paid_by'));
+            $paid_by_account = $paid_by->account_code;
+            if($this->input->post('amount-paid') == '0') {
+                $this->session->set_flashdata('error', lang('payment_not_be_zero'));
+                $this->bpas->md();
+            }
+            $sale = $this->sales_model->getInvoiceByID($this->input->post('sale_id'));
+            if ($this->input->post('paid_by') == 'deposit') {
+                $customer_id = $sale->customer_id;
+                if (!$this->site->check_customer_deposit($customer_id, $this->input->post('amount_paid_usd'), $this->input->post('amount_paid_khr'), $this->input->post('amount_paid_thb'))) {
+                    $this->session->set_flashdata('error', lang('amount_greater_than_deposit'));
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+            } else {
+                $customer_id = null;
+            }
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            $reference_no = $this->site->CheckedPaymentReference($this->input->post('reference_no'), $this->site->getReference('pay'));
+            $currencies   = array();
+            $camounts     = $this->input->post("c_amount");
+            if (!empty($camounts)) {
+                foreach($camounts as $key => $camount){
+                    $currency = $this->input->post("currency");
+                    $rate = $this->input->post("rate");
+                    $currencies[] = array(
+                        "amount"   => $camounts[$key],
+                        "currency" => $currency[$key],
+                        "rate"     => $rate[$key],
+                    );
+                }
+            }
+            $payment = [
+                'date'            => $date,
+                'sale_id'         => $this->input->post('sale_id'),
+                'reference_no'    => $reference_no,
+                'amount'          => $this->input->post('amount-paid'),
+                'discount'        => $this->input->post('discount'),
+                'paid_by'         => $this->input->post('paid_by'),
+                'currencies'      => json_encode($currencies),
+                'cheque_no'       => $this->input->post('cheque_no'),
+                'cc_no'           => $this->input->post('paid_by') == 'gift_card' ? $this->input->post('gift_card_no') : $this->input->post('pcc_no'),
+                'cc_holder'       => $this->input->post('pcc_holder'),
+                'cc_month'        => $this->input->post('pcc_month'),
+                'cc_year'         => $this->input->post('pcc_year'),
+                'cc_type'         => $this->input->post('pcc_type'),
+                'note'            => $this->input->post('note'),
+                'created_by'      => $this->session->userdata('user_id'),
+                'type'            => $sale->sale_status == 'returned' ? 'returned' : 'received',
+                'bank_account'    => $paid_by_account,
+                'payment_term'    => $this->input->post('payment_term') ? $this->input->post('payment_term') : null,
+                'write_off'       => $this->input->post('write_off') ? $this->input->post('write_off') : 0,
+                'down_payment_id' => $this->input->post('down_payment_id') ? $this->input->post('down_payment_id')  : null
+            ];
+            //=====add accounting=====//
+            if ($this->Settings->module_account == 1) {
+                if ($this->input->post('write_off')) {
+                    $accTranPayments[] = array(
+                        'tran_no'   => $id,
+                        'tran_type' => 'Payment',
+                        'tran_date' => $date,
+                        'reference_no' => $reference_no,
+                        'account_code' => $this->accounting_setting->default_receivable,
+                        'amount' => -($this->input->post('amount-paid')),
+                        'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                        'description' => $this->input->post('note'),
+                        'biller_id' => $sale->biller_id,
+                        'project_id' => $sale->project_id,
+                        'customer_id' => $sale->customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                    );
+                    $accTranPayments[] = array(
+                        'tran_no'   => $id,
+                        'tran_type' => 'Payment',
+                        'tran_date' => $date,
+                        'reference_no' => $reference_no,
+                        'account_code' => $this->accounting_setting->default_write_off,
+                        'amount' => $this->input->post('amount-paid'),
+                        'narrative' => $this->site->getAccountName($this->accounting_setting->default_write_off),
+                        'description' => $this->input->post('note'),
+                        'biller_id' => $sale->biller_id,
+                        'project_id' => $sale->project_id,
+                        'customer_id' => $sale->customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'activity_type' => 0, // 1= bussiness, 2 = investing, 3= financing activity
+                    );
+                } else {
+                    if ($this->input->post('amount-paid') > $balance) {
+                        $accTranPayments[] = array(
+                            'tran_no'   => $id,
+                            'tran_type' => 'Payment',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $this->accounting_setting->default_receivable,
+                            'amount' => -($balance+$this->input->post('discount')),
+                            'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                            'description' => $this->input->post('note'),
+                            'biller_id' => $sale->biller_id,
+                            'project_id' => $sale->project_id,
+                            'customer_id' => $sale->customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                        );
+                        $other_amount = $this->input->post('amount-paid') - $balance;
+                        $accTranPayments[] = array(
+                            'tran_no'   => $id,
+                            'tran_type' => 'Payment',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $this->accounting_setting->other_income,
+                            'amount' => -($other_amount),
+                            'narrative' => $this->site->getAccountName($this->accounting_setting->other_income),
+                            'description' => $this->input->post('note'),
+                            'biller_id' => $sale->biller_id,
+                            'project_id' => $sale->project_id,
+                            'customer_id' => $sale->customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => 1, // 1= bussiness, 2 = investing, 3= financing activity
+                        );
+                    } else {
+                        $amount = $this->input->post('amount-paid');
+                        $accTranPayments[] = array(
+                            'tran_no'   => $id,
+                            'tran_type' => 'Payment',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $this->accounting_setting->default_receivable,
+                            'amount' => -($this->input->post('amount-paid')+$this->input->post('discount')),
+                            'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                            'description' => $this->input->post('note'),
+                            'biller_id' => $sale->biller_id,
+                            'project_id' => $sale->project_id,
+                            'customer_id' => $sale->customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                        );
+                    }
+                    if ($this->input->post('paid_by') == 'deposit') {
+                        $paying_to = isset($this->accounting_setting->default_sale_deposit) ? $this->accounting_setting->default_sale_deposit : '';
+                    } else {
+                        $paying_to = isset($paid_by_account) ? $paid_by_account : $this->accounting_setting->default_cash ;
+                    }
+                    $accTranPayments[] = array(
+                        'tran_no'   => $id,
+                        'tran_type' => 'Payment',
+                        'tran_date' => $date,
+                        'reference_no' => $reference_no,
+                        'account_code' => $paying_to,
+                        'amount' => $this->input->post('amount-paid'),
+                        'narrative' => $this->site->getAccountName($paying_to),
+                        'description' => $this->input->post('note'),
+                        'biller_id' => $sale->biller_id,
+                        'project_id' => $sale->project_id,
+                        'customer_id' => $sale->customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'activity_type' => 1, // 1= bussiness, 2 = investing, 3= financing activity
+                    );
+                }
+                if($this->input->post('discount') != 0){
+                    $accTranPayments[] = array(
+                        'tran_no'   => $id,
+                        'tran_type'     => 'Payment',
+                        'tran_date'     => $date,
+                        'reference_no'  => $reference_no,
+                        'account_code'  => $this->accounting_setting->default_sale_discount,
+                        'amount'        => $this->input->post('discount'),
+                        'narrative'     => 'Purchase Payment Discount '.$reference_no,
+                        'description'   => $this->input->post('note'),
+                        'biller_id'     => $sale->biller_id,
+                        'project_id'    => $sale->project_id,
+                        'customer_id'   => $sale->customer_id,
+                        'created_by'    => $this->session->userdata('user_id'),
+                        'activity_type' => $this->site->get_activity($this->accounting_setting->default_sale_discount)
+                    );
+                }
+            }
+            //=====end accounting=====//
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path']   = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size']      = $this->allowed_file_size;
+                $config['overwrite']     = false;
+                $config['encrypt_name']  = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                $photo                 = $this->upload->file_name;
+                $payment['attachment'] = $photo;
+            }
+        } elseif ($this->input->post('add_payment')) {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->addPayment($payment, $customer_id, $accTranPayments)) {
+            if($down_payment_id){
+                 $this->db->update('down_payments', ['status' => 1], ['id' => $down_payment_id]);
+            }
+            if ($sale->shop) {
+                $this->load->library('sms');
+                $this->sms->paymentReceived($sale->id, $payment['reference_no'], $payment['amount']);
+            }
+            $this->session->set_flashdata('message', lang('payment_added'));
+            redirect($_SERVER['HTTP_REFERER']);
+        } else {
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            if ($sale->sale_status == 'returned' && $sale->paid == $sale->grand_total) {
+                $this->session->set_flashdata('warning', lang('payment_was_returned'));
+                $this->bpas->md();
+            }
+            if ($down_payment_id) {
+                $this->data['down_payment']    = $this->site->getDownPaymentByID($down_payment_id);
+                $this->data['down_payment_id'] = $down_payment_id;
+                $this->data['inv']             = $this->sales_model->getProductByID($down_payment_id);
+            } else {
+                $this->data['down_payment']    = '';
+                $this->data['down_payment_id'] = '';
+                $this->data['inv']             = $sale;
+            }
+            $this->data['payments_groupby_term'] = $this->sales_model->getInvoicePaymentsGroupByTerm($sale->id);
+            $this->data['currencies']      = $this->site->getAllCurrencies();
+            $this->data['payment_term']    = $payment_term;
+            $this->data['payments']        = $this->sales_model->getInvoicePayments($sale->id);
+            $this->data['deposit']         = $this->site->getCustomerDeposit($sale->customer_id);
+            $this->data['currency_dollar'] = $this->site->getCurrencyByCode('USD');
+            $this->data['currency_riel']   = $this->site->getCurrencyByCode('KHR');
+            $this->data['currency_baht']   = $this->site->getCurrencyByCode('THB');
+            $this->data['payment_ref']     = $this->site->getReference('pay');
+            $this->data['modal_js']        = $this->site->modal_js();
+            $this->load->view($this->theme . 'sales/add_payment', $this->data);
+        }
+    }
+
+    public function edit_payment($id = null)
+    {
+        $this->bpas->checkPermissions('edit', true);
+        $this->load->helper('security');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        if ($this->input->get('payment_term')) {
+            $payment_term = $this->input->get('payment_term');
+        } else {
+            $payment_term = null;
+        }
+        $sale_id = $this->input->post('sale_id');
+        $payment = $this->sales_model->getPaymentByID($id);
+        $sale    = $this->sales_model->getInvoiceByID($payment->sale_id);
+        if ($payment->paid_by == 'ppp' || $payment->paid_by == 'stripe' || $payment->paid_by == 'paypal' || $payment->paid_by == 'skrill') {
+            $this->session->set_flashdata('error', lang('x_edit_payment'));
+            $this->bpas->md();
+        }
+        $this->form_validation->set_rules('reference_no', lang('reference_no'), 'required');
+        $this->form_validation->set_rules('amount-paid', lang('amount'), 'required');
+        $this->form_validation->set_rules('paid_by', lang('paid_by'), 'required');
+        $this->form_validation->set_rules('userfile', lang('attachment'), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+            $paid_by = $this->site->getCashAccountByCode($this->input->post('paid_by'));
+            $paid_by_account = $paid_by->account_code;
+            $last_payment = $payment->amount;
+            if ($this->input->post('paid_by') == 'deposit') {
+                $sale        = $this->sales_model->getInvoiceByID($this->input->post('sale_id'));
+                $customer_id = $sale->customer_id;
+                $amount_usd  = $this->input->post('amount_paid_usd') - $payment->amount_usd;
+                $amount_khr  = $this->input->post('amount_paid_khr') - $payment->amount_khr;
+                $amount_thb  = $this->input->post('amount_paid_thb') - $payment->amount_thb;
+                if (!$this->site->check_customer_deposit($customer_id, $amount_usd, $amount_khr, $amount_thb)) {
+                    $this->session->set_flashdata('error', lang('amount_greater_than_deposit'));
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+            } else {
+                $customer_id = null;
+            }
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = $payment->date;
+            }
+            $currencies = array();
+            $camounts = $this->input->post("c_amount");
+            if (!empty($camounts)) {
+                foreach ($camounts as $key => $camount) {
+                    $currency = $this->input->post("currency");
+                    $rate = $this->input->post("rate");
+                    $currencies[] = array(
+                        "amount"   => $camounts[$key],
+                        "currency" => $currency[$key],
+                        "rate"     => $rate[$key],
+                    );
+                }
+            }
+            $reference_no = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('pay');
+            $payment = [
+                'date'         => $date,
+                'sale_id'      => $this->input->post('sale_id'),
+                'reference_no' => $this->input->post('reference_no'),
+                'amount'       => $this->input->post('amount-paid'),
+                'discount'      => $this->input->post('discount'),
+                'currencies'    => json_encode($currencies),
+                'paid_by'      => $this->input->post('paid_by'),
+                'cheque_no'    => $this->input->post('cheque_no'),
+                'cc_no'        => $this->input->post('pcc_no'),
+                'cc_holder'    => $this->input->post('pcc_holder'),
+                'cc_month'     => $this->input->post('pcc_month'),
+                'cc_year'      => $this->input->post('pcc_year'),
+                'cc_type'      => $this->input->post('pcc_type'),
+                'note'         => $this->input->post('note'),
+                'created_by'   => $this->session->userdata('user_id'),
+                'bank_account' => $paid_by_account,
+                'write_off'    => $this->input->post('write_off')?$this->input->post('write_off'):0
+            ];
+
+                //=====add accounting=====//
+            if($this->Settings->module_account == 1){
+                $sale = $this->sales_model->getInvoiceByID($this->input->post('sale_id'));
+                $balance= $sale->grand_total - ($sale->paid - $last_payment);
+                if($this->input->post('write_off')){
+                    $accTranPayments[] = array(
+                        'tran_no' => $sale_id,
+                        'payment_id' => $id,
+                        'tran_type' => 'Payment',
+                        'tran_date' => $date,
+                        'reference_no' => $reference_no,
+                        'account_code' => $this->accounting_setting->default_receivable,
+                        'amount' => -($this->input->post('amount-paid')+$this->input->post('discount')),
+                        'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                        'description' => $this->input->post('note'),
+                        'biller_id' => $sale->biller_id,
+                        'project_id' => $sale->project_id,
+                        'customer_id' => $sale->customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                    );
+                    $accTranPayments[] = array(
+                        'tran_no'   => $sale_id,
+                        'payment_id' => $id,
+                        'tran_type' => 'Payment',
+                        'tran_date' => $date,
+                        'reference_no' => $reference_no,
+                        'account_code' => $this->accounting_setting->default_write_off,
+                        'amount' => $this->input->post('amount-paid'),
+                        'narrative' => $this->site->getAccountName($this->accounting_setting->default_write_off),
+                        'description' => $this->input->post('note'),
+                        'biller_id' => $sale->biller_id,
+                        'project_id' => $sale->project_id,
+                        'customer_id' => $sale->customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'activity_type' => 0, // 1= bussiness, 2 = investing, 3= financing activity
+                    );
+                }else{
+                    /*if ($this->input->post('amount-paid') > $balance) {
+                        $accTranPayments[] = array(
+                            'tran_no' => $sale_id,
+                            'tran_type' => 'Sale',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $this->accounting_setting->default_receivable,
+                            'amount' => -($balance),
+                            'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                            'description' => $this->input->post('note'),
+                            'biller_id' => $sale->biller_id,
+                            'project_id' => $sale->project_id,
+                            'customer_id' => $sale->customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                        );
+
+                        $other_amount = $this->input->post('amount-paid') - $balance;
+                        $accTranPayments[] = array(
+                            'tran_no' => $sale_id,
+                            'tran_type' => 'Sale',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $this->accounting_setting->other_income,
+                            'amount' => -($other_amount),
+                            'narrative' => $this->site->getAccountName($this->accounting_setting->other_income),
+                            'description' => $this->input->post('note'),
+                            'biller_id' => $sale->biller_id,
+                            'project_id' => $sale->project_id,
+                            'customer_id' => $sale->customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                        );
+                    }else{*/
+                        $amount = $this->input->post('amount-paid');
+                        $accTranPayments[] = array(
+                            'tran_no' => $sale_id,
+                            'payment_id' => $id,
+                            'tran_type' => 'Payment',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $this->accounting_setting->default_receivable,
+                            'amount' => -($this->input->post('amount-paid')+$this->input->post('discount')),
+                            'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                            'description' => $this->input->post('note'),
+                            'biller_id' => $sale->biller_id,
+                            'project_id' => $sale->project_id,
+                            'customer_id' => $sale->customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                        );
+                     //}
+
+                        if ($this->input->post('paid_by') == 'deposit') {
+                            $paying_to = $this->accounting_setting->default_sale_deposit;
+                        } else {
+                            $paying_to = isset($paid_by_account) ? $paid_by_account : $this->accounting_setting->default_cash ;
+                        }
+                        $accTranPayments[] = array(
+                            'tran_no' => $sale_id,
+                            'payment_id' => $id,
+                            'tran_type' => 'Payment',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $paying_to,
+                            'amount' => $this->input->post('amount-paid'),
+                            'narrative' => $this->site->getAccountName($paying_to),
+                            'description' => $this->input->post('note'),
+                            'biller_id' => $sale->biller_id,
+                            'project_id' => $sale->project_id,
+                            'customer_id' => $sale->customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => 1 // 1= bussiness, 2 = investing, 3= financing activity
+                        );
+                    }
+                    if($this->input->post('discount') != 0){
+                        $accTranPayments[] = array(
+                            'tran_no'       => $sale_id,
+                            'payment_id'    => $id,
+                            'tran_type'     => 'Payment',
+                            'tran_date'     => $date,
+                            'reference_no'  => $reference_no,
+                            'account_code'  => $this->accounting_setting->default_sale_discount,
+                            'amount'        => $this->input->post('discount'),
+                            'narrative'     => 'Sale Payment Discount '.$reference_no,
+                            'description'   => $this->input->post('note'),
+                            'biller_id'     => $sale->biller_id,
+                            'project_id'    => $sale->project_id,
+                            'customer_id'   => $sale->customer_id,
+                            'created_by'    => $this->session->userdata('user_id'),
+                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_sale_discount)
+                        );
+                    }
+                }
+                //=====end accounting=====//
+                if ($_FILES['userfile']['size'] > 0) {
+                    $this->load->library('upload');
+                    $config['upload_path']   = $this->digital_upload_path;
+                    $config['allowed_types'] = $this->digital_file_types;
+                    $config['max_size']      = $this->allowed_file_size;
+                    $config['overwrite']     = false;
+                    $config['encrypt_name']  = true;
+                    $this->upload->initialize($config);
+                    if (!$this->upload->do_upload()) {
+                        $error = $this->upload->display_errors();
+                        $this->session->set_flashdata('error', $error);
+                        redirect($_SERVER['HTTP_REFERER']);
+                    }
+                    $photo                 = $this->upload->file_name;
+                    $payment['attachment'] = $photo;
+                }
+                //$this->bpas->print_arrays($payment);
+            } elseif ($this->input->post('edit_payment')) {
+                $this->session->set_flashdata('error', validation_errors());
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+        if ($this->form_validation->run() == true && $this->sales_model->updatePayment($id, $payment, $customer_id, $accTranPayments)) {
+            $this->session->set_flashdata('message', lang('payment_updated'));
+            admin_redirect('sales');
+        } else {
+            $this->data['error']           = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['inv']             = $sale;
+            $this->data['payment']         = $payment;
+            $this->data['payment_term']    = $payment_term;
+            $this->data['currencies']      = $this->site->getAllCurrencies();
+            $this->data['deposit']         = (isset($sale->customer_id) ? $this->site->getCustomerDeposit($sale->customer_id) : null);
+            $this->data['modal_js']        = $this->site->modal_js();
+            $this->load->view($this->theme . 'sales/edit_payment', $this->data);
+        }
+    }
+
+    public function payment_note($id = null) 
+    {
+        $this->bpas->checkPermissions('payments', true);
+        $payment                  = $this->sales_model->getPaymentByID($id);
+        $inv                      = $this->sales_model->getInvoiceByID($payment->sale_id);
+        $this->data['biller']     = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['customer']   = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['inv']        = $inv;
+        $this->data['payment']    = $payment;
+        $this->data['page_title'] = lang('payment_note');
+        $this->load->view($this->theme . 'sales/payment_note', $this->data);
+    }
+
+    public function payment_receipt($id = null, $i = null)
+    {
+        $this->bpas->checkPermissions('payments', true);
+        $payment = $this->sales_model->getPaymentByID($id);
+        $inv = $this->sales_model->getInvoiceByID($payment->sale_id);
+        $this->data['biller'] = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['customer'] = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['inv'] = $inv;
+        $this->data['no'] = $i-1;
+        $this->data['payment'] = $payment;
+        $this->data['page_title'] = lang("payment_note");
+        $this->data['project'] = $this->site->getAllProjectByID($inv->project_id);  
+        $this->load->view($this->theme . 'sales/payment_receipt', $this->data);
+    }
+
+    public function Downpayment_note($id = null)
+    {
+        $this->bpas->checkPermissions('payments', true);
+        $payment                  = $this->sales_model->getDownPaymentByID($id);
+        $inv                      = $this->sales_model->getInvoiceByID($payment->sale_id);
+        $this->data['biller']     = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['customer']   = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['inv']        = $inv;
+        $this->data['payment']    = $payment;
+        $this->data['page_title'] = lang('payment_note');
+
+        $this->load->view($this->theme . 'sales/Downpayment_note', $this->data);
+    }
+    /* -------------------------------------------------------------------------------- */
+    
+    public function view_down_payments($id = null,$product_id = null)
+    {
+        $this->bpas->checkPermissions(false, true);
+        $this->data['down_payments'] = $this->sales_model->getInvoicedownPayments($id,$product_id);
+        if($product_id){
+            $this->data['inv']      = $this->sales_model->getProductByID($product_id);
+        }else{
+            $this->data['inv']      = $this->sales_model->getInvoicesByID($id);
+        }
+        $this->load->view($this->theme . 'sales/view_down_payments', $this->data);
+    }
+    public function pdf($id = null, $view = null, $save_bufffer = null)
+    {
+        $this->bpas->checkPermissions();
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $inv                 = $this->sales_model->getInvoiceByID($id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by);
+        }
+        $this->data['barcode']     = "<img src='" . admin_url('products/gen_barcode/' . $inv->reference_no) . "' alt='" . $inv->reference_no . "' class='pull-left' />";
+        $this->data['customer']    = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['payments']    = $this->sales_model->getPaymentsForSale($id);
+        $this->data['biller']      = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['user']        = $this->site->getUser($inv->created_by);
+        $this->data['warehouse']   = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['inv']         = $inv;
+        $this->data['rows']        = $this->sales_model->getAllInvoiceItems($id);
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        $this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+        //$this->data['paypal'] = $this->sales_model->getPaypalSettings();
+        //$this->data['skrill'] = $this->sales_model->getSkrillSettings();
+
+        $name = lang('sale') . '_' . str_replace('/', '_', $inv->reference_no) . '.pdf';
+        $html = $this->load->view($this->theme . 'sales/pdf', $this->data, true);
+        if (!$this->Settings->barcode_img) {
+            $html = preg_replace("'\<\?xml(.*)\?\>'", '', $html);
+        }
+
+        if ($view) {
+            $this->load->view($this->theme . 'sales/pdf', $this->data);
+        } elseif ($save_bufffer) {
+            return $this->bpas->generate_pdf($html, $name, $save_bufffer, $this->data['biller']->invoice_footer);
+        } else {
+            $this->bpas->generate_pdf($html, $name, false, $this->data['biller']->invoice_footer);
+        }
+    }
+    public function pdf_delivery($id = null, $view = null, $save_bufffer = null)
+    {
+        $this->bpas->checkPermissions();
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+        $deli                = $this->sales_model->getDeliveryByID($id);
+
+        $this->data['delivery'] = $deli;
+        $sale                   = $this->sales_model->getInvoiceByID($deli->sale_id);
+        $this->data['biller']   = $this->site->getCompanyByID($sale->biller_id);
+        $this->data['rows']     = $this->sales_model->getAllInvoiceItemsWithDetails($deli->sale_id);
+        $this->data['user']     = $this->site->getUser($deli->created_by);
+
+        $name = lang('delivery') . '_' . str_replace('/', '_', $deli->do_reference_no) . '.pdf';
+        $html = $this->load->view($this->theme . 'sales/pdf_delivery', $this->data, true);
+        if (!$this->Settings->barcode_img) {
+            $html = preg_replace("'\<\?xml(.*)\?\>'", '', $html);
+        }
+        if ($view) {
+            $this->load->view($this->theme . 'sales/pdf_delivery', $this->data);
+        } elseif ($save_bufffer) {
+            return $this->bpas->generate_pdf($html, $name, $save_bufffer);
+        } else {
+            $this->bpas->generate_pdf($html, $name);
+        }
+    }
+    /* ------------------------------- */
+    public function return_sale($id = null)
+    {
+        $this->bpas->checkPermissions('return_sales');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $sale = $this->sales_model->getInvoiceByID($id);
+        $sale_balance_items = null;
+        if ($sale->return_id) {
+            if ($this->sales_model->checkReturned($sale->id)) {
+                $this->session->set_flashdata('error', lang('sale_already_return_items_completed'));
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+        }
+        $this->form_validation->set_rules('return_surcharge', lang('return_surcharge'), 'required');
+        if ($this->form_validation->run() == true) {
+            $reference = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('re');
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            $return_surcharge = $this->input->post('return_surcharge') ? $this->input->post('return_surcharge') : 0;
+            $shipping         = $this->input->post('shipping') ? $this->input->post('shipping') : 0;
+            $note             = $this->bpas->clear_tags($this->input->post('note'));
+            $total_items      = $this->input->post('total_items');
+            $customer_details = $this->site->getCompanyByID($sale->customer_id);
+            $biller_details   = $this->site->getCompanyByID($sale->biller_id);
+            $commission_product = 0;
+            $total            = 0;
+            $product_tax      = 0;
+            $product_discount = 0;
+            $gst_data         = [];
+            $stockmoves       = null;
+            $total_cgst       = $total_sgst       = $total_igst       = 0;
+            $i                = isset($_POST['product_code']) ? sizeof($_POST['product_code']) : 0;
+            for ($r = 0; $r < $i; $r++) {
+                $item_id            = $_POST['product_id'][$r];
+                $item_type          = $_POST['product_type'][$r];
+                $item_code          = $_POST['product_code'][$r];
+                $item_name          = $_POST['product_name'][$r];
+                $sale_item_id       = $_POST['sale_item_id'][$r];
+                $real_unit_price    = $this->bpas->formatDecimal($_POST['real_unit_price'][$r]);
+                $unit_price         = $this->bpas->formatDecimal($_POST['unit_price'][$r]);
+                $item_unit_quantity = (0 - $_POST['quantity'][$r]);
+                $item_serial        = isset($_POST['serial'][$r]) ? $_POST['serial'][$r] : null;
+                $item_tax_rate      = isset($_POST['product_tax'][$r]) ? $_POST['product_tax'][$r] : null;
+                $item_discount      = isset($_POST['product_discount'][$r]) ? $_POST['product_discount'][$r] : null;
+                $item_unit          = $_POST['product_unit'][$r];
+                $item_quantity      = (0 - $_POST['product_base_quantity'][$r]);
+                $item_option        = isset($_POST['product_option'][$r]) && !empty($_POST['product_option'][$r]) && $_POST['product_option'][$r] != 'false' && $_POST['product_option'][$r] != 'undefined' && $_POST['product_option'][$r] != 'null' && $_POST['product_option'][$r] != 'NULL' ? $_POST['product_option'][$r] : null;
+                $item_expiry        = isset($_POST['product_expiry'][$r]) && !empty($_POST['product_expiry'][$r]) && $_POST['product_expiry'][$r] != 'false' && $_POST['product_expiry'][$r] != 'undefined' && $_POST['product_expiry'][$r] != 'null' && $_POST['product_expiry'][$r] != 'NULL' && $_POST['product_expiry'][$r] != '00/00/0000' && $_POST['product_expiry'][$r] != '' ? $_POST['product_expiry'][$r] : null; 
+                if (isset($item_code) && isset($real_unit_price) && isset($unit_price) && isset($item_quantity)) {
+                    $product_details  = $item_type != 'manual' ? $this->sales_model->getProductByID($item_id) : null;
+                    $cost             = $product_details->cost;
+                    $pr_discount      = $this->site->calculateDiscount($item_discount, $unit_price);
+                    $unit_price       = $this->bpas->formatDecimal($unit_price - $pr_discount);
+                    $item_net_price   = $unit_price;
+                    $pr_item_discount = $this->bpas->formatDecimal($pr_discount * $item_unit_quantity);
+                    $product_discount += $pr_item_discount;
+                    $pr_item_tax      = $item_tax = 0;
+                    $tax              = '';
+                    if (isset($item_tax_rate) && $item_tax_rate != 0) {
+                        $tax_details = $this->site->getTaxRateByID($item_tax_rate);
+                        $ctax        = $this->site->calculateTax($product_details, $tax_details, $unit_price);
+                        $item_tax    = $ctax['amount'];
+                        $tax         = $ctax['tax'];
+                        if (!$product_details || (!empty($product_details) && $product_details->tax_method != 1)) {
+                            $item_net_price = $unit_price - $item_tax;
+                        }
+                        $pr_item_tax = $this->bpas->formatDecimal($item_tax * $item_unit_quantity);
+                    }
+                    $product_tax       += $pr_item_tax;
+                    $subtotal           = $this->bpas->formatDecimal(($item_net_price * $item_unit_quantity) + $pr_item_tax);
+                    $unit               = $item_unit ? $this->site->getUnitByID($item_unit) : false;
+                    $purchase_unit_cost = $product_details->cost;
+                    $getitems           = $this->site->getProductByID($item_id);
+                    $commission_item    = $this->site->getProductCommissionByID($getitems->id);
+                    if ($unit->id != $product_details->unit) {
+                        $cost = $this->site->convertCostingToBase($purchase_unit_cost, $unit);
+                    } else {
+                        $cost = $cost;
+                    }
+                    if ($product_details->type == 'combo') {
+                        if ($combo_items = $this->sales_model->getProductComboItems($item_id)) {
+                            foreach ($combo_items as $combo_item) {
+                                $combo_detail = $this->site->getProductByID($combo_item->id);
+                                $combo_unit   = $this->site->getProductUnit($combo_item->id, $combo_detail->unit);
+                                $combo_qty    = $combo_item->qty * $item_quantity * (-1);
+                                $combo_price  = $combo_item->price;
+                                $stockmoves[] = array(
+                                    'transaction'    => 'SaleReturn',
+                                    'product_id'     => $combo_detail->id,
+                                    'product_type'   => $combo_detail->type,
+                                    'product_code'   => $combo_detail->code,
+                                    'product_name'   => $combo_detail->name,
+                                    'quantity'       => $combo_qty,
+                                    'unit_quantity'  => $combo_unit->unit_qty,
+                                    'unit_code'      => $combo_unit->code,
+                                    'unit_id'        => $combo_detail->unit,
+                                    'warehouse_id'   => $sale->warehouse_id,
+                                    'date'           => $date,
+                                    'real_unit_cost' => $combo_detail->cost,
+                                    'reference_no'   => $reference,
+                                    'user_id'        => $this->session->userdata('user_id'),
+                                );
+                                //=======accounting=========//
+                                $productAcc = $this->site->getProductAccByProductId($combo_detail->id);
+                                if ($this->Settings->module_account == 1 && $sale->sale_status == 'completed') {
+                                    $getproduct   = $this->site->getProductByID($item_id);
+                                    $default_sale = $this->accounting_setting->default_sale;
+                                    $accTrans[]   = array(
+                                        'tran_type'     => 'SaleReturn',
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $this->accounting_setting->default_stock,
+                                        'amount'        => ($combo_detail->cost * $combo_qty),
+                                        'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                        'description'   => $note,
+                                        'biller_id'     => $sale->biller_id,
+                                        'project_id'    => $sale->project_id,
+                                        'customer_id'   => $sale->customer_id,
+                                        'created_by'    => $this->session->userdata('user_id'),
+                                    );
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'SaleReturn',
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $this->accounting_setting->default_cost,
+                                        'amount'        => ($combo_detail->cost * $combo_qty) * (-1),
+                                        'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                        'description'   => $note,
+                                        'biller_id'     => $sale->biller_id,
+                                        'project_id'    => $sale->project_id,
+                                        'customer_id'   => $sale->customer_id,
+                                        'created_by'    => $this->session->userdata('user_id'),
+                                        'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost)
+                                    );
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'SaleReturn',
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $default_sale,
+                                        'amount'        => -($combo_price * $combo_qty),
+                                        'narrative'     => $this->site->getAccountName($default_sale),
+                                        'description'   => $note,
+                                        'biller_id'     => $sale->biller_id,
+                                        'project_id'    => $sale->project_id,
+                                        'customer_id'   => $sale->customer_id,
+                                        'created_by'    => $this->session->userdata('user_id'),
+                                    );
+                                }
+                                //============end accounting=======//
+                            }
+                        }
+                    } else {
+                        $unit = $this->site->getProductUnit($item_id, $item_unit);
+                        $stockmoves[] = array(
+                            'transaction'    => 'SaleReturn',
+                            'product_id'     => $item_id,
+                            'product_type'   => $item_type,
+                            'product_code'   => $item_code,
+                            'product_name'   => $item_name,
+                            'option_id'      => $item_option,
+                            'quantity'       => $item_quantity * (-1),
+                            'unit_quantity'  => $unit->unit_qty,
+                            'unit_code'      => $unit->code,
+                            'expiry'         => $item_expiry,
+                            'unit_id'        => $item_unit,
+                            'warehouse_id'   => $sale->warehouse_id,
+                            'date'           => $date,
+                            'real_unit_cost' => $cost,
+                            'reference_no'   => $reference,
+                            'user_id'        => $this->session->userdata('user_id'),
+                        );
+                        //========accounting=========//
+                        if ($this->Settings->module_account == 1 && $sale->sale_status == 'completed') {
+                            $getproduct   = $this->site->getProductByID($item_id);
+                            $default_sale = $this->accounting_setting->default_sale;
+                            $accTrans[]   = array(
+                                'tran_type'     => 'SaleReturn',
+                                'tran_date'     => $date,
+                                'reference_no'  => $reference,
+                                'account_code'  => $this->accounting_setting->default_stock,
+                                'amount'        => ($cost * abs($item_unit_quantity)),
+                                'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                'description'   => $note,
+                                'biller_id'     => $sale->biller_id,
+                                'project_id'    => $sale->project_id,
+                                'customer_id'   => $sale->customer_id,
+                                'created_by'    => $this->session->userdata('user_id'),
+                            );
+                            $accTrans[] = array(
+                                'tran_type'     => 'SaleReturn',
+                                'tran_date'     => $date,
+                                'reference_no'  => $reference,
+                                'account_code'  => $this->accounting_setting->default_cost,
+                                'amount'        => -($cost * abs($item_unit_quantity)),
+                                'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                'description'   => $note,
+                                'biller_id'     => $sale->biller_id,
+                                'project_id'    => $sale->project_id,
+                                'customer_id'   => $sale->customer_id,
+                                'created_by'    => $this->session->userdata('user_id'),
+                                'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost)
+                            );
+                            $accTrans[] = array(
+                                'tran_type'     => 'SaleReturn',
+                                'tran_date'     => $date,
+                                'reference_no'  => $reference,
+                                'account_code'  => $default_sale,
+                                'amount'        => -($subtotal),
+                                'narrative'     => $this->site->getAccountName($default_sale),
+                                'description'   => $note,
+                                'biller_id'     => $sale->biller_id,
+                                'project_id'    => $sale->project_id,
+                                'customer_id'   => $sale->customer_id,
+                                'created_by'    => $this->session->userdata('user_id'),
+                            );
+                        }
+                        //============end accounting=======//
+                    }
+                    $product = [
+                        'product_id'         => $item_id,
+                        'product_code'       => $item_code,
+                        'product_name'       => $item_name,
+                        'product_type'       => $item_type,
+                        'option_id'          => $item_option,
+                        'cost'               => $cost,
+                        'purchase_unit_cost' => $purchase_unit_cost ? $purchase_unit_cost : NULL,
+                        'net_unit_price'     => $item_net_price,
+                        'unit_price'         => $this->bpas->formatDecimal($item_net_price + $item_tax),
+                        'quantity'           => $item_quantity,
+                        'product_unit_id'    => $item_unit,
+                        'product_unit_code'  => $unit ? $unit->code : null,
+                        'unit_quantity'      => $item_unit_quantity,
+                        'warehouse_id'       => $sale->warehouse_id,
+                        'item_tax'           => $pr_item_tax,
+                        'tax_rate_id'        => $item_tax_rate,
+                        'tax'                => $tax,
+                        'discount'           => $item_discount,
+                        'item_discount'      => $pr_item_discount,
+                        'subtotal'           => $this->bpas->formatDecimal($subtotal),
+                        'serial_no'          => $item_serial,
+                        'sale_item_id'       => $sale_item_id,
+                        'expiry'             => $item_expiry,
+                        'commission'         => isset($commission_item->price) ? $commission_item->price * $item_quantity : 0,
+                    ];
+                    $commission_product += isset($commission_item->price) ? $commission_item->price * $item_quantity : 0;
+                    $si_return[] = [
+                        'id'           => $sale_item_id,
+                        'sale_id'      => $id,
+                        'product_id'   => $item_id,
+                        'option_id'    => $item_option,
+                        'quantity'     => (0 - $item_quantity),
+                        'expiry'       => $item_expiry,
+                        'warehouse_id' => $sale->warehouse_id,
+                    ];
+                    $products[] = ($product + $gst_data);
+                    $total += $this->bpas->formatDecimal(($item_net_price * $item_unit_quantity), 4);
+                } 
+            }
+            if (empty($products)) {
+                $this->form_validation->set_rules('product', lang('order_items'), 'required');
+            } else {
+                krsort($products);
+            }
+            $order_discount = $this->site->calculateDiscount($this->input->post('order_discount'), ($total + $product_tax));
+            $total_discount = $this->bpas->formatDecimal(($order_discount + $product_discount), 4);
+            $order_tax      = $this->site->calculateOrderTax($this->input->post('order_tax'), ($total + $product_tax - $order_discount));
+            $total_tax      = $this->bpas->formatDecimal(($product_tax + $order_tax), 4);
+            $grand_total    = $this->bpas->formatDecimal(($total + $total_tax + $this->bpas->formatDecimal($return_surcharge) + (0 - $shipping) - $order_discount), 4);
+            $saleman_award_points = 0;
+            $staff = $this->site->getUser($sale->saleman_by);
+            if (!empty($staff)) {
+               if ($staff->save_point && !empty($this->Settings->each_sale)) {
+                    $saleman_award_points = floor(($grand_total / $this->Settings->each_sale) * $this->Settings->sa_point);
+                } 
+            }
+            //=======acounting=========//
+            if ($this->Settings->module_account == 1) {
+                if (abs($order_discount) != 0) {
+                    $accTrans[] = array(
+                        'tran_type'    => 'SaleReturn',
+                        'tran_date'    => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_sale_discount,
+                        'amount'       => -abs($order_discount),
+                        'narrative'    => 'Order Discount Return '.$sale->reference_no,
+                        'description'  => $note,
+                        'biller_id'    => $sale->biller_id,
+                        'project_id'   => $sale->project_id,
+                        'customer_id'  => $sale->customer_id,
+                        'created_by'   => $this->session->userdata('user_id'),
+                    );
+                }
+                if (abs($order_tax) != 0) {
+                    $accTrans[] = array(
+                        'tran_type'    => 'SaleReturn',
+                        'tran_date'    => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_sale_tax,
+                        'amount'       => abs($order_tax),
+                        'narrative'    => 'Order Tax Return '.$sale->reference_no,
+                        'description'  => $note,
+                        'biller_id'    => $sale->biller_id,
+                        'project_id'   => $sale->project_id,
+                        'customer_id'  => $sale->customer_id,
+                        'created_by'   => $this->session->userdata('user_id'),
+                    );  
+                }
+                if ($return_surcharge != 0) {
+                    $accTrans[] = array(
+                        'tran_type'    => 'SaleReturn',
+                        'tran_date'    => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->other_income,
+                        'amount'       => -$return_surcharge,
+                        'narrative'    => 'Surcharge Return '.$sale->reference_no,
+                        'description'  => $note,
+                        'biller_id'    => $sale->biller_id,
+                        'project_id'   => $sale->project_id,
+                        'customer_id'  => $sale->customer_id,
+                        'created_by'   => $this->session->userdata('user_id'),
+                    );
+                }
+            }
+            //============end accounting=======//
+            $data  = [
+                'sale_id'              => $id,
+                'date'                 => $date,
+                'project_id'           => $this->input->post('project'),
+                'reference_no'         => $sale->reference_no,
+                'customer_id'          => $sale->customer_id,
+                'customer'             => $sale->customer,
+                'biller_id'            => $sale->biller_id,
+                'biller'               => $sale->biller,
+                'warehouse_id'         => $sale->warehouse_id,
+                'total_items'          => $total_items,
+                'note'                 => $note,
+                'total'                => $total,
+                'product_discount'     => $product_discount,
+                'order_discount_id'    => $this->input->post('discount') ? $this->input->post('order_discount') : null,
+                'order_discount'       => $order_discount,
+                'total_discount'       => $total_discount,
+                'product_tax'          => $product_tax,
+                'order_tax_id'         => $this->input->post('order_tax'),
+                'order_tax'            => $order_tax,
+                'total_tax'            => $total_tax,
+                'surcharge'            => $this->bpas->formatDecimal($return_surcharge),
+                'grand_total'          => $grand_total,
+                'created_by'           => $this->session->userdata('user_id'),
+                'saleman_by'           => $sale->saleman_by,
+                'zone_id'              => $sale->zone_id,
+                'return_sale_ref'      => $reference,
+                'shipping'             => $shipping,
+                'original_price'       => $sale->original_price,
+                'module_type'          => $sale->module_type,
+                'currency_rate_kh'     => $sale->currency_rate_kh,
+                'sale_status'          => 'returned',
+                'pos'                  => $sale->pos,
+                'payment_status'       => $sale->payment_status == 'paid' ? 'due' : 'pending',
+                'saleman_award_points' => $saleman_award_points
+            ];
+            if ($this->input->post('amount-paid') && $this->input->post('amount-paid') > 0) {
+                $pay_ref = $this->input->post('payment_reference_no') ? $this->input->post('payment_reference_no') : $this->site->getReference('pp');
+                $payment = [
+                    'date'         => $date,
+                    'reference_no' => $pay_ref,
+                    'amount'       => (0 - $this->input->post('amount-paid')),
+                    'paid_by'      => $this->input->post('paid_by'),
+                    'cheque_no'    => $this->input->post('cheque_no'),
+                    'cc_no'        => $this->input->post('pcc_no'),
+                    'cc_holder'    => $this->input->post('pcc_holder'),
+                    'cc_month'     => $this->input->post('pcc_month'),
+                    'cc_year'      => $this->input->post('pcc_year'),
+                    'cc_type'      => $this->input->post('pcc_type'),
+                    'created_by'   => $this->session->userdata('user_id'),
+                    'type'         => 'returned',
+                ];
+                $data['payment_status'] = ($grand_total == $this->input->post('amount-paid')) ? 'paid' : 'partial';
+                //------------accounting-----------
+                $paying_to = ($this->input->post('bank_account') !=0) ? $this->input->post('bank_account'): $this->accounting_setting->default_cash;
+                $amount_paying = $this->input->post('amount-paid');
+                if ($amount_paying > (-1 * $grand_total)) {
+                    $accTrans[] = array(
+                        'tran_type'    => 'Payment',
+                        'tran_date'    => $date,
+                        'reference_no' => $pay_ref,
+                        'account_code' => $this->accounting_setting->other_income,
+                        'amount'       => ($amount_paying - (-1 * $grand_total)),
+                        'narrative'    => $this->site->getAccountName($this->accounting_setting->other_income),
+                        'description'  => $note,
+                        'biller_id'    => $sale->biller_id,
+                        'project_id'   => $sale->project_id,
+                        'customer_id'  => $sale->customer_id,
+                        'created_by'   => $this->session->userdata('user_id'),
+                    );
+                    $accTrans[] = array(
+                        'tran_type'    => 'Payment',
+                        'tran_date'    => $date,
+                        'reference_no' => $pay_ref,
+                        'account_code' => $paying_to,
+                        'amount'       => -($amount_paying),
+                        'narrative'    => $this->site->getAccountName($paying_to),
+                        'description'  => $note,
+                        'biller_id'    => $sale->biller_id,
+                        'project_id'   => $sale->project_id,
+                        'customer_id'  => $sale->customer_id,
+                        'created_by'   => $this->session->userdata('user_id'),
+                    );
+                } else {
+                    if ($amount_paying < (-1 * $grand_total)) {
+                        $accTrans[] = array(
+                            'tran_type'     => 'Payment',
+                            'tran_date'     => $date,
+                            'reference_no'  => $pay_ref,
+                            'account_code'  => $this->accounting_setting->default_receivable,
+                            'amount'        => -((-1 * $grand_total) - $amount_paying),
+                            'narrative'     => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                            'description'   => $note,
+                            'biller_id'     => $sale->biller_id,
+                            'project_id'    => $sale->project_id,
+                            'customer_id'   => $sale->customer_id,
+                            'created_by'    => $this->session->userdata('user_id'),
+                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                        );
+                    }
+                    $accTrans[] = array(
+                        'tran_type'    => 'Payment',
+                        'tran_date'    => $date,
+                        'reference_no' => $pay_ref,
+                        'account_code' => $paying_to,
+                        'amount'       => -($this->input->post('amount-paid')),
+                        'narrative'    => $this->site->getAccountName($paying_to),
+                        'description'  => $note,
+                        'biller_id'    => $sale->biller_id,
+                        'project_id'   => $sale->project_id,
+                        'customer_id'  => $sale->customer_id,
+                        'created_by'   => $this->session->userdata('user_id'),
+                    );
+                }
+                //------close accounting------
+            } else {
+                $accTrans[] = array(
+                    'tran_type'     => 'Payment',
+                    'tran_date'     => $date,
+                    'reference_no'  => $this->site->getReference('pay'),
+                    'account_code'  => $this->accounting_setting->default_receivable,
+                    'amount'        => $grand_total,
+                    'narrative'     => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                    'description'   => 'Due '. $grand_total,
+                    'biller_id'     => $sale->biller_id,
+                    'project_id'    => $sale->project_id,
+                    'customer_id'   => $sale->customer_id,
+                    'created_by'    => $this->session->userdata('user_id'),
+                    'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                );
+                $payment = [];
+            }
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path']   = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size']      = $this->allowed_file_size;
+                $config['overwrite']     = false;
+                $config['encrypt_name']  = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                $photo              = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+            // $this->bpas->print_arrays($stockmoves);
+            // $this->bpas->print_arrays($data, $products, $si_return, $payment);
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->addSale($data, $products, $stockmoves, $payment, $si_return, $accTrans, null, null, $commission_product)) {
+            $this->session->set_flashdata('message', lang('return_sale_added'));
+            admin_redirect($sale->pos ? 'pos/sales' : 'sales');
+        } else {
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['inv'] = $sale;
+            if ($this->data['inv']->sale_status != 'consignment' && $this->data['inv']->sale_status != 'completed') {
+                $this->session->set_flashdata('error', lang('sale_already_return_items_completed'));
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+            $this->bpas->deadlineDayEditing($this->data['inv']->date);
+            $inv_items = $this->sales_model->getAllInvoiceItems($id);
+            if ($sale->return_id) {
+                if (!$this->sales_model->checkReturned($sale->id)){
+                    $inv_items = $this->sales_model->getSaleBalance_Items($id);
+                }
+            }
+            $c = rand(100000, 9999999);
+            foreach ($inv_items as $item) {
+                $row = $this->sales_model->getWarehouseProduct($item->product_id, $item->warehouse_id);
+                if (!$row) {
+                    $row             = json_decode('{}');
+                    $row->tax_method = 0;
+                    $row->quantity   = 0;
+                } else {
+                    unset($row->cost, $row->details, $row->product_details, $row->image, $row->barcode_symbology, $row->cf1, $row->cf2, $row->cf3, $row->cf4, $row->cf5, $row->cf6, $row->supplier1price, $row->supplier2price, $row->cfsupplier3price, $row->supplier4price, $row->supplier5price, $row->supplier1, $row->supplier2, $row->supplier3, $row->supplier4, $row->supplier5, $row->supplier1_part_no, $row->supplier2_part_no, $row->supplier3_part_no, $row->supplier4_part_no, $row->supplier5_part_no);
+                }
+                $pis = $this->site->getStockMovement_ProductBalanceQuantity($item->product_id, $item->warehouse_id, $item->option_id);
+                if ($pis) {
+                    $row->quantity = $pis->quantity_balance;
+                }
+                $row->id              = $item->product_id;
+                $row->sale_item_id    = $item->id;
+                $row->expiry          = $item->expiry;
+                $row->code            = $item->product_code;
+                $row->name            = $item->product_name;
+                $row->type            = $item->product_type;
+                $row->base_unit       = (!empty($row->unit) ? $row->unit : $item->product_unit_id);
+                $row->unit            = $item->product_unit_id;
+                $row->qty             = $item->unit_quantity;
+                $row->oqty            = $item->unit_quantity;
+                $row->discount        = $item->discount ? $item->discount : '0';
+                $row->price           = $this->bpas->formatDecimal($item->net_unit_price + $this->bpas->formatDecimal($item->item_discount / (isset($item->real_saleItem_quantity) ? $item->real_saleItem_quantity : $item->quantity)));
+                $row->unit_price      = $row->tax_method ? 
+                                        ($item->unit_price + $this->bpas->formatDecimal($item->item_discount / (isset($item->real_saleItem_quantity) ? $item->real_saleItem_quantity : $item->quantity)) + $this->bpas->formatDecimal($item->item_tax / (isset($item->real_saleItem_quantity) ? $item->real_saleItem_quantity : $item->quantity))) : 
+                                        $item->unit_price + ($item->item_discount / (isset($item->real_saleItem_quantity) ? $item->real_saleItem_quantity : $item->quantity));
+                $row->real_unit_price = $item->real_unit_price;
+                $row->base_quantity   = $item->quantity;
+                $row->base_unit_price = $row->price ? $row->price : $item->unit_price;
+                $row->tax_rate        = $item->tax_rate_id;
+                $row->serial          = $item->serial_no;
+                $row->option          = $item->option_id;
+                $options              = $this->sales_model->getProductOptions($row->id, $item->warehouse_id, true);
+                $units                = $this->site->getUnitsByBUID($row->base_unit);
+                $tax_rate             = $this->site->getTaxRateByID($row->tax_rate);
+                $ri                   = $this->Settings->item_addition ? $row->id : $c;
+                $pr[$ri] = ['id' => $c, 'item_id' => $row->id, 'label' => $row->name . ' (' . $row->code . ')', 'row' => $row, 'units' => $units, 'tax_rate' => $tax_rate, 'options' => $options];
+                $c++;
+            }
+            $this->data['id']           = $id;
+            $this->data['inv_items']    = json_encode($pr);
+            $this->data['billers']      = $this->site->getAllCompanies('biller');
+            $this->data['warehouses']   = $this->site->getAllWarehouses();
+            $this->data['tax_rates']    = $this->site->getAllTaxRates();
+            $this->data['agencies']     = $this->site->getAllUsers();
+            $this->data['customers']    = $this->site->getCustomers();
+            $this->data['currency']     = $this->site->getCurrency();
+            $this->data['reference']    = $this->site->getReference('re');
+            $this->data['payment_ref']  = $this->site->getReference('pp');
+            $this->data['tax_rates']    = $this->site->getAllTaxRates();
+            $this->data['setting']      = $this->site->get_setting();
+            $this->data['bankAccounts'] = $this->site->getAllBankAccounts();
+            $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('return_sale')]];
+            $meta = ['page_title' => lang('return_sale'), 'bc' => $bc];
+            $this->page_construct('sales/return_sale', $meta, $this->data);
+        }
+    }
+
+    public function sale_actions()
+    {
+        if (!$this->Owner && !$this->GP['bulk_actions']) {
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        $this->form_validation->set_rules('form_action', lang('form_action'), 'required');
+        if ($this->form_validation->run() == true) {
+            if (!empty($_POST['val'])) {
+                if ($this->input->post('form_action') == 'delete') {
+                    $this->bpas->checkPermissions('delete');
+                    $settings = $this->site->getSettings();
+                    if($settings->hide != 0){
+                        foreach ($_POST['val'] as $id) {
+                            $this->sales_model->deleteSale($id);
+                        }
+                        $this->session->set_flashdata('message', lang('sales_deleted'));
+                        redirect($_SERVER['HTTP_REFERER']);
+                    }else{
+                        foreach ($_POST['val'] as $id) {
+                            $this->sales_model->removeSale($id);
+                        }
+                        $this->session->set_flashdata('message', lang('sales_removed'));
+                        redirect($_SERVER['HTTP_REFERER']);
+                    }
+                } elseif ($this->input->post('form_action') == 'declare_tax') {
+                  //  $this->bpas->checkPermissions('delete');
+                    foreach ($_POST['val'] as $id) {
+                        $inv = $this->sales_model->getInvoiceByID($id);
+                        if($inv->declare_tax !=1){
+                            $BillerCode = 'tax_sale';//$this->site->getCompanyByID($inv->biller_id)->code;
+                            $taxReference = $this->site->getReference($BillerCode);
+                            //'tax_reference_no' => $taxReference,
+                            if ($this->db->update('sales', ['declare_tax' => 1], ['id' => $id])){
+                                $data = array(
+                                    'reference'     => $taxReference,
+                                    'sale_id'       => $id,
+                                    'created_by'    => $this->session->userdata('user_id'),
+                                );
+                                $this->db->insert("tax_sales",$data);
+                                $this->site->updateReference($BillerCode);
+                            }
+                        }
+                    }
+                    $this->session->set_flashdata('message', 'Invoice '.$inv->reference_no.' '.
+                                            lang('has been declare to tax'));
+                    redirect($_SERVER['HTTP_REFERER']);
+                }elseif ($this->input->post('form_action') == 'generate') {
+                    foreach ($_POST['val'] as $id) {
+                        $row        = $this->site->getMaintenanceByID($id);
+                        $sale_id    = $row->sale_id;
+                        $sale       = $this->sales_model->getInvoiceByID($sale_id);
+                        $saleItems = $this->sales_model->getAllInvoiceItems($sale_id);
+                 
+                        $datas       = [
+                            'date'                => date('Y-m-d H:i'),
+                            'project_id'          => $sale->project_id,
+                            'so_id'               => $sale->so_id? $sale->so_id : null,
+                            'reference_no'        => $this->site->getReference('so'),
+                            'po_number'           => $sale->po_number,
+                            'customer_id'         => $sale->customer_id,
+                            'customer'            => $sale->customer,
+                            'biller_id'           => $sale->biller_id,
+                            'biller'              => $sale->biller,
+                            'warehouse_id'        => $sale->warehouse_id,
+                            'note'                => $sale->note,
+                            'staff_note'          => $sale->staff_note,
+                            'total'               => $sale->total,
+                            'product_discount'    => $sale->product_discount,
+                            'order_discount_id'   => $sale->order_discount_id,
+                            'order_discount'      => $sale->order_discount,
+                            'total_discount'      => $sale->total_discount,
+                            'product_tax'         => $sale->product_tax,
+                            'order_tax_id'        => $sale->order_tax_id,
+                            'order_tax'           => $sale->order_tax,
+                            'total_tax'           => $sale->total_tax,
+                            'shipping'            => $sale->shipping,
+                            'grand_total'         => $sale->grand_total,
+                            'total_items'         => $sale->total_items,
+                            'sale_status'         => 'completed',
+                            'payment_status'      => 'pending',
+                            'payment_term'        => $sale->payment_term,
+                            'due_date'            => $sale->due_date,
+                            'paid'                => 0, 
+                            'created_by'          => $this->session->userdata('user_id'),
+                            'hash'                => hash('sha256', microtime() . mt_rand()),
+                            'saleman_by'          => $sale->saleman_by,
+                        ];
+                        foreach ($saleItems as $item) {
+                          
+                            $product = [
+                                'product_id'        => $item->product_id,
+                                'product_code'      => $item->product_code,
+                                'product_name'      => $item->product_name,
+                                'product_type'      => $item->product_type,
+                                'option_id'         => $item->option_id,
+                                'purchase_unit_cost'=> $item->purchase_unit_cost ? $item->purchase_unit_cost: NULL,
+                                'net_unit_price'    => $item->net_unit_price,
+                                'unit_price'        => $item->unit_price,
+                                'quantity'          => $item->quantity,
+                                'product_unit_id'   => $item->product_unit_id ? $item->product_unit_id : null,
+                                'product_unit_code' => $item->product_unit_code ? $item->product_unit_code : null,
+                                'unit_quantity'     => $item->unit_quantity,
+                                'warehouse_id'      => $item->warehouse_id,
+                                'item_tax'          => $item->item_tax,
+                                'tax_rate_id'       => $item->tax_rate_id,
+                                'tax'               => $item->tax,
+                                'discount'          => $item->discount,
+                                'item_discount'     => $item->item_discount,
+                                'subtotal'          => $item->subtotal,
+                                'serial_no'         => $item->serial_no,
+                                'max_serial'        => $item->max_serial,
+                                'real_unit_price'   => $item->real_unit_price,
+                                'addition_type'     => $item->addition_type,
+                                'warranty'          => $item->warranty,
+                                'weight'            => $item->weight,
+                                'total_weight'      => $item->total_weight,
+                                'comment'           => $item->comment,
+                            ];
+                            $products[] = $product;
+                        }
+                        if (empty($products)) {
+                            $this->form_validation->set_rules('product', lang('order_items'), 'required');
+                        } else {
+                            krsort($products);
+                        }
+                        $this->sales_model->addSale($datas, $products,'','', '', '', null,'');
+                    }
+                    
+                    $this->session->set_flashdata('message', lang('Invoice generate'));
+                    redirect($_SERVER['HTTP_REFERER']);
+                } elseif ($this->input->post('form_action') == 'sync_account'){
+                    $i=1;
+                    foreach ($_POST['val'] as $id) {
+                        $sales = $this->sales_model->getsale_detail_ByID($id);
+                        foreach($sales as $sale) {
+                            $item_type          = $sale->product_type;
+                            $item_code          = $sale->product_code;
+                            $product_details    = $this->sales_model->getProductByCode($item_code);
+                            $cost               = $product_details->cost;
+                            $id                 = $sale->id;
+                            $date               = $sale->date;
+                            $reference          = $sale->reference_no;
+                            $order_discount     = $sale->order_discount;
+                            $order_tax          = $sale->order_tax;
+                            $shipping           = $sale->shipping;
+                            $item_quantity      = $sale->quantity;
+                            $note               = $sale->note;
+                            $biller_id          = $sale->biller_id;
+                            $project_id         = $sale->project_id;
+                            $user_id            = $sale->created_by;
+                            $customer_id        = $sale->customer_id;
+                            $item_net_price     = $sale->unit_price;
+                            $item_tax           = $sale->item_tax;
+                            $item_unit_quantity = $sale->quantity;
+                            $item_id            = $sale->product_id;
+                            
+                            if($this->Settings->module_account == 1 && $item_type != 'manual' && $sale->sale_status=='completed'){
+
+                                $getproduct     = $this->site->getProductByID($item_id);
+                                $default_sale   = ($item_type == 'standard') ? $this->accounting_setting->default_sale : $this->accounting_setting->other_income;
+                                $inventory_acc  = $this->accounting_setting->default_stock;
+                                $costing_acc    = $this->accounting_setting->default_cost;
+                            
+                                $product_tax = $this->bpas->formatDecimal($product_tax);
+                                $accTrans[] = array(
+                                    'tran_type'     => 'Sale',
+                                    'tran_date'     => $date,
+                                    'reference_no'  => $reference,
+                                    'account_code'  => $this->accounting_setting->default_stock,
+                                    'amount'        => -($cost * $item_unit_quantity),
+                                    'narrative'     => $this->site->getAccountName($this->accounting_setting->default_stock),
+                                    'description'   => $note,
+                                    'biller_id'     => $biller_id,
+                                    'project_id'    => $project_id,
+                                    'customer_id'   => $customer_id,
+                                    'created_by'    => $user_id,
+                                );
+                                $accTrans[] = array(
+                                    'tran_type'     => 'Sale',
+                                    'tran_date'     => $date,
+                                    'reference_no'  => $reference,
+                                    'account_code'  => $this->accounting_setting->default_cost,
+                                    'amount'        => ($cost * $item_unit_quantity),
+                                    'narrative'     => $this->site->getAccountName($this->accounting_setting->default_cost),
+                                    'description'   => $note,
+                                    'biller_id'     => $biller_id,
+                                    'project_id'    => $project_id,
+                                    'customer_id'   => $customer_id,
+                                    'created_by'    => $user_id,
+                                );
+                                $accTrans[] = array(
+                                    'tran_type'     => 'Sale',
+                                    'tran_date'     => $date,
+                                    'reference_no'  => $reference,
+                                    'account_code'  => $default_sale,
+                                    'amount'        => -($product_tax >0 ? ($subtotal-$product_tax) : $subtotal),
+                                    'narrative'     => $this->site->getAccountName($default_sale),
+                                    'description'   => $note,
+                                    'biller_id'     => $biller_id,
+                                    'project_id'    => $project_id,
+                                    'customer_id'   => $customer_id,
+                                    'created_by'    => $user_id,
+                                );
+                                if($product_tax > 0){
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $this->accounting_setting->default_sale_tax,
+                                        'amount'        => -($product_tax),
+                                        'narrative'     => $this->site->getAccountName($this->accounting_setting->default_sale_tax),
+                                        'description'   => $note,
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'customer_id'   => $customer_id,
+                                        'created_by'    => $user_id,
+                                    );
+                                }
+                            }
+                            //=======acounting=========//
+                            if($this->Settings->module_account == 1){
+                                if($order_discount != 0){
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $this->accounting_setting->default_sale_discount,
+                                        'amount'        => $order_discount,
+                                        'narrative'     => 'Order Discount',
+                                        'description'   => $note,
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'customer_id'   => $customer_id,
+                                        'created_by'    => $user_id,
+                                    );
+                                }
+                                if($order_tax != 0){
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $this->accounting_setting->default_sale_tax,
+                                        'amount'        => -$order_tax,
+                                        'narrative'     => 'Order Tax',
+                                        'description'   => $note,
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'customer_id'   => $customer_id,
+                                        'created_by'    => $user_id,
+                                    );
+                                }
+                                if($shipping != 0){
+                                    $accTrans[] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_date'     => $date,
+                                        'reference_no'  => $reference,
+                                        'account_code'  => $this->accounting_setting->default_sale_freight,
+                                        'amount'        => -$shipping,
+                                        'narrative'     => 'Shipping',
+                                        'description'   => $note,
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'customer_id'   => $customer_id,
+                                        'created_by'    => $user_id,
+                                    );
+                                }
+                            }
+                            //============end accounting=======//
+                        }
+                        $this->sales_model->syncAcc_Sale($id, $data, $products,$accTrans,$accTranPayments);
+                    }
+                    $this->session->set_flashdata('message', lang('sync_account_successful'));
+                    admin_redirect('sales');
+                } elseif ($this->input->post('form_action') == 'combine') {
+                    $html = $this->combine_pdf($_POST['val']);
+                } elseif ($this->input->post('form_action') == 'export_excel') {
+                    $this->load->library('excel');
+                    $this->excel->setActiveSheetIndex(0);
+                    $this->excel->getActiveSheet()->setTitle(lang('sales'));
+                    $this->excel->getActiveSheet()->SetCellValue('A1', lang('no'));
+                    $this->excel->getActiveSheet()->SetCellValue('B1', lang('date'));
+                    $this->excel->getActiveSheet()->SetCellValue('C1', lang('project'));
+                    $this->excel->getActiveSheet()->SetCellValue('D1', lang('saleman'));
+                    $this->excel->getActiveSheet()->SetCellValue('E1', lang('order_ref'));
+                    $this->excel->getActiveSheet()->SetCellValue('F1', lang('reference_no'));
+                    $this->excel->getActiveSheet()->SetCellValue('G1', lang('biller'));
+                    $this->excel->getActiveSheet()->SetCellValue('H1', lang('customer'));
+                    $this->excel->getActiveSheet()->SetCellValue('I1', lang('total'));
+                    $this->excel->getActiveSheet()->SetCellValue('J1', lang('discount'));
+                    $this->excel->getActiveSheet()->SetCellValue('K1', lang('grand_total'));
+                    $this->excel->getActiveSheet()->SetCellValue('L1', lang('paid'));
+                    $this->excel->getActiveSheet()->SetCellValue('M1', lang('payment_status'));
+                    $row = 2;
+                    $i=1;
+                    foreach ($_POST['val'] as $id) {
+                        $sale = $this->sales_model->getInvoiceByID($id);
+                        $saleman = $this->auth_model->getUserByID($sale->saleman_by);
+                        $project = $this->projects_model->getProjectByID($sale->project_id);
+                        $sale_order = $this->sales_order_model->getSaleOrderRefByID($sale->so_id);
+                        $this->excel->getActiveSheet()->SetCellValue('A' . $row, $i);
+                        $this->excel->getActiveSheet()->SetCellValue('B' . $row, $this->bpas->hrld($sale->date));
+                        $this->excel->getActiveSheet()->SetCellValue('C' . $row, $project ? $project->project_name : '');
+                        $this->excel->getActiveSheet()->SetCellValue('D' . $row, $saleman != false ? $saleman->first_name . ' ' . $saleman->last_name : '');
+                        $this->excel->getActiveSheet()->SetCellValue('E' . $row, $sale_order != false ? $sale_order->reference_no : '');
+                        $this->excel->getActiveSheet()->SetCellValue('F' . $row, $sale->reference_no);
+                        $this->excel->getActiveSheet()->SetCellValue('G' . $row, $sale->biller);
+                        $this->excel->getActiveSheet()->SetCellValue('H' . $row, $sale->customer);
+                        $this->excel->getActiveSheet()->SetCellValue('I' . $row, $sale->total);
+                        $this->excel->getActiveSheet()->SetCellValue('J' . $row, $sale->total_discount);
+                        $this->excel->getActiveSheet()->SetCellValue('K' . $row, $sale->grand_total);
+                        $this->excel->getActiveSheet()->SetCellValue('L' . $row, lang($sale->paid));
+                        $this->excel->getActiveSheet()->SetCellValue('M' . $row, lang($sale->payment_status));
+                        $row++;
+                        $i++;
+                    }
+                    $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(8);
+                    $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                    $this->excel->getDefaultStyle()->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $filename = 'sales_' . date('Y_m_d_H_i_s');
+                    $this->load->helper('excel');
+                    create_excel($this->excel, $filename);
+                } elseif ($this->input->post('form_action') == 'preview') {
+                        /*  $this->load->library('excel');
+                        $this->excel->setActiveSheetIndex(0);
+                        $this->excel->getActiveSheet()->setTitle(lang('sales'));
+                        $this->excel->getActiveSheet()->SetCellValue('A1', lang('no'));
+                        $this->excel->getActiveSheet()->SetCellValue('B1', lang('date'));
+                        $this->excel->getActiveSheet()->SetCellValue('C1', lang('reference_no'));
+                        $this->excel->getActiveSheet()->SetCellValue('D1', lang('total'));
+                        $this->excel->getActiveSheet()->SetCellValue('E1', lang('discount'));
+                        $this->excel->getActiveSheet()->SetCellValue('F1', lang('grand_total'));
+
+                        $row = 2;
+                        $i=1;
+                        foreach ($_POST['val'] as $id) {
+                            $sale = $this->sales_model->getInvoiceByID($id);
+                            $this->excel->getActiveSheet()->SetCellValue('A' . $row, $i);
+                            $this->excel->getActiveSheet()->SetCellValue('B' . $row, $this->bpas->hrld($sale->date));
+                            $this->excel->getActiveSheet()->SetCellValue('C' . $row, $sale->reference_no);
+                            $this->excel->getActiveSheet()->SetCellValue('D' . $row, $sale->total);
+                            $this->excel->getActiveSheet()->SetCellValue('E' . $row, $sale->total_discount);
+                            $this->excel->getActiveSheet()->SetCellValue('F' . $row, $sale->grand_total);
+                            $row++;
+                            $i++;
+                        }
+
+                        $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(8);
+                        $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                        $this->excel->getDefaultStyle()->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                        $filename = 'sales_' . date('Y_m_d_H_i_s');
+                        $this->load->helper('excel');
+                        create_excel($this->excel, $filename);
+                        */
+                       // $this->bpas->checkPermissions('payments', true);
+                        $this->load->helper('security');
+                        $this->data['start_date']   = $this->input->post('start_date') ? $this->input->post('start_date') : null;
+                        $this->data['end_date']     = $this->input->post('end_date') ? $this->input->post('end_date') : null;
+                        $this->data['sales']         = $_POST['val'];
+                        $this->data['payment_ref'] = $this->site->getReference('pay');
+                        $this->data['modal_js']    = $this->site->modal_js();
+
+                        $this->load->view($this->theme . 'sales/preview_sale', $this->data);
+                      //  $meta = ['page_title' => lang('sales')];
+                     //   $this->page_construct('sales/sales_view', $meta, $this->data);
+                    }
+                } else {
+                    $this->session->set_flashdata('error', lang('no_sale_selected'));
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+            } else {
+                $this->session->set_flashdata('error', validation_errors());
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+    }
+    
+    public function sale_by_csv()
+    {
+        $this->bpas->checkPermissions('import');
+        $this->load->helper('security');
+        $this->form_validation->set_rules('userfile', lang('upload_file'), 'xss_clean');
+        $this->form_validation->set_message('is_natural_no_zero', lang('no_zero_required'));
+        $this->form_validation->set_rules('customer', lang('customer'), 'required');
+        $this->form_validation->set_rules('biller', lang('biller'), 'required');
+        $this->form_validation->set_rules('sale_status', lang('sale_status'), 'required');
+        $this->form_validation->set_rules('payment_status', lang('payment_status'), 'required');
+        $this->form_validation->set_rules('project', lang('project'), 'required');
+        
+        if ($this->form_validation->run() == true) {
+            $reference = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('so');
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            $warehouse_id     = $this->input->post('warehouse');
+            $customer_id      = $this->input->post('customer');
+            $biller_id        = $this->input->post('biller');
+            $total_items      = $this->input->post('total_items');
+            $sale_status      = $this->input->post('sale_status');
+            $payment_status   = $this->input->post('payment_status');
+            $payment_term     = $this->input->post('payment_term');
+            $due_date         = $payment_term ? date('Y-m-d', strtotime('+' . $payment_term . ' days')) : null;
+            $shipping         = $this->input->post('shipping') ? $this->input->post('shipping') : 0;
+            $customer_details = $this->site->getCompanyByID($customer_id);
+            $customer         = $customer_details->company && $customer_details->company != '-' ? $customer_details->company : $customer_details->name;
+            $biller_details   = $this->site->getCompanyByID($biller_id);
+            $biller           = $biller_details->company && $biller_details->company != '-' ? $biller_details->company : $biller_details->name;
+            $note             = $this->bpas->clear_tags($this->input->post('note'));
+            $staff_note       = $this->bpas->clear_tags($this->input->post('staff_note'));
+
+            $total            = 0;
+            $product_tax      = 0;
+            $product_discount = 0;
+            $gst_data         = [];
+            $total_cgst       = $total_sgst       = $total_igst       = 0;
+            if (isset($_FILES['userfile'])) {
+                $this->load->library('upload');
+                $config['upload_path']   = $this->digital_upload_path;
+                $config['allowed_types'] = 'csv';
+                $config['max_size']      = $this->allowed_file_size;
+                $config['overwrite']     = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    admin_redirect('sales/sale_by_csv');
+                }
+                $csv = $this->upload->file_name;
+
+                $arrResult = [];
+                $handle    = fopen($this->digital_upload_path . $csv, 'r');
+                
+                if ($handle) {
+                    while (($row = fgetcsv($handle, 1000, ',')) !== false) {
+                        $arrResult[] = $row;
+                    }
+                    fclose($handle);
+                }
+                
+                $titles = array_shift($arrResult);
+                $keys  = ['code', 'net_unit_price', 'quantity', 'variant', 'item_tax_rate', 'discount', 'serial'];
+                
+                $final = [];
+                foreach ($arrResult as $key => $value) {
+                    $final[] = array_combine($keys, $value);
+                }
+
+                $rw = 2;
+                foreach ($final as $csv_pr) {
+                    if (isset($csv_pr['code']) && isset($csv_pr['net_unit_price']) && isset($csv_pr['quantity'])) {
+                        if ($product_details = $this->sales_model->getProductByCode($csv_pr['code'])) {
+                            if ($csv_pr['variant']) {
+                                $item_option = $this->sales_model->getProductVariantByName($csv_pr['variant'], $product_details->id);
+                                if (!$item_option) {
+                                    $this->session->set_flashdata('error', lang('pr_not_found') . ' ( ' . $product_details->name . ' - ' . $csv_pr['variant'] . ' ). ' . lang('line_no') . ' ' . $rw);
+                                    redirect($_SERVER['HTTP_REFERER']);
+                                }
+                            } else {
+                                $item_option     = json_decode('{}');
+                                $item_option->id = null;
+                            }
+
+                            $item_id        = $product_details->id;
+                            $item_type      = $product_details->type;
+                            $item_code      = $product_details->code;
+                            $item_name      = $product_details->name;
+                            $item_net_price = $this->bpas->formatDecimal($csv_pr['net_unit_price']);
+                            $item_quantity  = $csv_pr['quantity'];
+                            $item_tax_rate  = $csv_pr['item_tax_rate'];
+                            $item_discount  = $csv_pr['discount'];
+                            $item_serial    = $csv_pr['serial'];
+
+                            if (isset($item_code) && isset($item_net_price) && isset($item_quantity)) {
+                                $product_details  = $this->sales_model->getProductByCode($item_code);
+                                $pr_discount      = $this->site->calculateDiscount($item_discount, $item_net_price);
+                                $item_net_price   = $this->bpas->formatDecimal(($item_net_price - $pr_discount), 4);
+                                $pr_item_discount = $this->bpas->formatDecimal(($pr_discount * $item_quantity), 4);
+                                $product_discount += $pr_item_discount;
+
+                                $tax         = '';
+                                $pr_item_tax = 0;
+                                $unit_price  = $item_net_price;
+                                $tax_details = ((isset($item_tax_rate) && !empty($item_tax_rate)) ? $this->sales_model->getTaxRateByName($item_tax_rate) : $this->site->getTaxRateByID($product_details->tax_rate));
+                                if ($tax_details) {
+                                    $ctax     = $this->site->calculateTax($product_details, $tax_details, $unit_price);
+                                    $item_tax = $ctax['amount'];
+                                    $tax      = $ctax['tax'];
+                                    if (!$product_details || (!empty($product_details) && $product_details->tax_method != 1)) {
+                                        $item_net_price = $unit_price - $item_tax;
+                                    }
+                                    $pr_item_tax = $this->bpas->formatDecimal($item_tax * $item_quantity, 4);
+                                    if ($this->Settings->indian_gst && $gst_data = $this->gst->calculteIndianGST($pr_item_tax, ($biller_details->state == $customer_details->state), $tax_details)) {
+                                        $total_cgst += $gst_data['cgst'];
+                                        $total_sgst += $gst_data['sgst'];
+                                        $total_igst += $gst_data['igst'];
+                                    }
+                                }
+
+                                $product_tax += $pr_item_tax;
+                                $subtotal = $this->bpas->formatDecimal((($item_net_price * $item_quantity) + $pr_item_tax), 4);
+                                $unit     = $this->site->getUnitByID($product_details->unit);
+
+                                $product = [
+                                    'product_id'        => $product_details->id,
+                                    'product_code'      => $item_code,
+                                    'product_name'      => $item_name,
+                                    'product_type'      => $item_type,
+                                    'option_id'         => $item_option->id,
+                                    'net_unit_price'    => $item_net_price,
+                                    'quantity'          => $item_quantity,
+                                    'product_unit_id'   => $product_details->unit,
+                                    'product_unit_code' => $unit->code,
+                                    'unit_quantity'     => $item_quantity,
+                                    'warehouse_id'      => $warehouse_id,
+                                    'item_tax'          => $pr_item_tax,
+                                    'tax_rate_id'       => $tax_details ? $tax_details->id : null,
+                                    'tax'               => $tax,
+                                    'discount'          => $item_discount,
+                                    'item_discount'     => $pr_item_discount,
+                                    'subtotal'          => $subtotal,
+                                    'serial_no'         => $item_serial,
+                                    'unit_price'        => $this->bpas->formatDecimal(($item_net_price + $item_tax), 4),
+                                    'real_unit_price'   => $this->bpas->formatDecimal(($item_net_price + $item_tax + $pr_discount), 4),
+                                ];
+
+                                $products[] = ($product + $gst_data);
+                                $total += $this->bpas->formatDecimal(($item_net_price * $item_quantity), 4);
+                            }
+                        } else {
+                            $this->session->set_flashdata('error', lang('pr_not_found') . ' ( ' . $csv_pr['code'] . ' ). ' . lang('line_no') . ' ' . $rw);
+                            redirect($_SERVER['HTTP_REFERER']);
+                        }
+                        $rw++;
+                    }
+                }
+            }
+
+            $order_discount = $this->site->calculateDiscount($this->input->post('order_discount'), ($total + $product_tax));
+            $total_discount = $this->bpas->formatDecimal(($order_discount + $product_discount), 4);
+            $order_tax      = $this->site->calculateOrderTax($this->input->post('order_tax'), ($total + $product_tax - $order_discount));
+            $total_tax      = $this->bpas->formatDecimal(($product_tax + $order_tax), 4);
+            $grand_total    = $this->bpas->formatDecimal(($total + $total_tax + $this->bpas->formatDecimal($shipping) - $order_discount), 4);
+            $data           = [
+                'date' => $date,
+                'reference_no'        => $reference,
+                'project_id'          => $this->input->post('project'),
+                'customer_id'         => $customer_id,
+                'customer'            => $customer,
+                'biller_id'           => $biller_id,
+                'biller'              => $biller,
+                'warehouse_id'        => $warehouse_id,
+                'note'                => $note,
+                'staff_note'          => $staff_note,
+                'total'               => $total,
+                'product_discount'    => $product_discount,
+                'order_discount_id'   => $this->input->post('order_discount'),
+                'order_discount'      => $order_discount,
+                'total_discount'      => $total_discount,
+                'product_tax'         => $product_tax,
+                'order_tax_id'        => $this->input->post('order_tax'),
+                'order_tax'           => $order_tax,
+                'total_tax'           => $total_tax,
+                'shipping'            => $this->bpas->formatDecimal($shipping),
+                'grand_total'         => $grand_total,
+                'total_items'         => $total_items,
+                'sale_status'         => $sale_status,
+                'payment_status'      => $payment_status,
+                'payment_term'        => $payment_term,
+                'due_date'            => $due_date,
+                'paid'                => 0,
+                'created_by'          => $this->session->userdata('user_id'),
+            ];
+            if ($this->Settings->indian_gst) {
+                $data['cgst'] = $total_cgst;
+                $data['sgst'] = $total_sgst;
+                $data['igst'] = $total_igst;
+            }
+
+            if ($payment_status == 'paid') {
+                $payment = [
+                    'date'         => $date,
+                    'reference_no' => $this->site->getReference('pay'),
+                    'amount'       => $grand_total,
+                    'paid_by'      => 'cash',
+                    'cheque_no'    => '',
+                    'cc_no'        => '',
+                    'cc_holder'    => '',
+                    'cc_month'     => '',
+                    'cc_year'      => '',
+                    'cc_type'      => '',
+                    'created_by'   => $this->session->userdata('user_id'),
+                    'note'         => lang('auto_added_for_sale_by_csv') . ' (' . lang('sale_reference_no') . ' ' . $reference . ')',
+                    'type'         => 'received',
+                ];
+            } else {
+                $payment = [];
+            }
+
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path']   = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size']      = $this->allowed_file_size;
+                $config['overwrite']     = false;
+                $config['encrypt_name']  = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                $photo              = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+
+            // $this->bpas->print_arrays($data, $products, $payment);
+        }
+
+        if ($this->form_validation->run() == true && 
+            $this->sales_model->addSale($data, $products, $payment, $si_return = array(), $accTrans, $accTranPayments)) {
+            $this->session->set_userdata('remove_slls', 1);
+            $this->session->set_flashdata('message', lang('sale_added'));
+            admin_redirect('sales');
+        } else {
+            $data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+
+            $this->data['warehouses'] = $this->site->getAllWarehouses();
+            $this->data['tax_rates']  = $this->site->getAllTaxRates();
+            $this->data['billers']    = $this->site->getAllCompanies('biller');
+            $this->data['slnumber']   = $this->site->getReference('so');
+            $this->data['projects']   = $this->site->getAllProject();
+
+            $user = $this->site->getUser($this->session->userdata('user_id'));
+            if ($this->Settings->multi_biller) {
+                $this->data['user_billers'] = $user->multi_biller ? explode(',', $user->multi_biller) : null;
+            } else {
+                $this->data['user_billers'] = $user->biller_id ? ((array) $user->biller_id) : null;
+            }
+            $this->data['count']            = explode(',', $this->session->userdata('warehouse_id'));
+            $this->data['user_warehouses']  = $user->warehouse_id ? explode(',', $user->warehouse_id) : null;
+
+            $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('add_sale_by_csv')]];
+            $meta = ['page_title' => lang('add_sale_by_csv'), 'bc' => $bc];
+            $this->page_construct('sales/sale_by_csv', $meta, $this->data);
+        }
+    }
+    public function import_sale(){
+        $this->bpas->checkPermissions();
+        $this->load->helper('security');
+        $this->form_validation->set_rules('userfile', lang("upload_file"), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+            if (isset($_FILES["userfile"])) {
+                $sales = false;
+                $sale_items = false;
+                $products = false;
+                $stockmoves = false;
+                $accTrans = false;
+
+                $biller_id = $this->input->post("biller");
+                $biller_details = $this->site->getCompanyByID($biller_id);
+                $biller = $biller_details->company != '-' ? $biller_details->company : $biller_details->name;
+                $warehouse_id = $this->input->post("warehouse");
+                $project_id = $this->input->post("project");
+                $saleAcc = $this->site->getAccountSettingByBiller($biller_id);
+                $this->load->library('excel');
+                $path = $_FILES["userfile"]["tmp_name"];
+                $object = PHPExcel_IOFactory::load($path);
+                $o_date = "";
+                $o_customer_code = "";
+                $o_reference = "";
+                foreach($object->getWorksheetIterator() as $worksheet){
+                    $highestRow = $worksheet->getHighestRow();
+                    $highestColumn = $worksheet->getHighestColumn();
+                    for($row=2; $row<=$highestRow; $row++){
+                        $date           = $worksheet->getCellByColumnAndRow(0, $row)->getValue();
+                        $reference      = trim($worksheet->getCellByColumnAndRow(1, $row)->getFormattedValue());
+                        $customer_code  = trim($worksheet->getCellByColumnAndRow(2, $row)->getValue());
+                        $product_code   = trim($worksheet->getCellByColumnAndRow(4, $row)->getValue());
+                        $quantity       = trim($worksheet->getCellByColumnAndRow(6, $row)->getValue());
+                        $unit           = trim($worksheet->getCellByColumnAndRow(7, $row)->getValue());
+                        $price          = trim($worksheet->getCellByColumnAndRow(8, $row)->getValue());
+                        $discount       = trim($worksheet->getCellByColumnAndRow(9, $row)->getFormattedValue());
+                        $order_discount = trim($worksheet->getCellByColumnAndRow(10, $row)->getFormattedValue());
+                        $order_tax      = trim($worksheet->getCellByColumnAndRow(11, $row)->getFormattedValue());
+                        $shipping       = trim($worksheet->getCellByColumnAndRow(12, $row)->getValue());
+                        //if (strpos($date, '/') == false) {  
+                            $date = PHPExcel_Shared_Date::ExcelToPHP($date);
+                            $date    = isset($date) ? date('m-d-Y',$date) : '';
+                            $date = $this->bpas->fld(trim($date));
+                        //}
+                            
+              
+
+                        if($date=="" || $reference=="" || $customer_code==""){
+                            $date = $o_date;
+                            $reference = $o_reference;
+                            $customer_code = $o_customer_code;
+                            $order_discount = $o_order_discount;
+                            $order_tax = $o_order_tax;
+                            $shipping = $o_shipping;
+                        }
+                        if($date!='' && $reference!='' && $customer_code!='' && $product_code!=''){
+                            $finals[] = array(
+                                'date'          => $date,
+                                'reference'     => $reference,
+                                'customer_code' => $customer_code,
+                                'product_code'  => $product_code,
+                                'quantity'      => $quantity,
+                                'unit'          => $unit,
+                                'price'         => $price,
+                                'discount'      => $discount,
+                                'order_discount'=> $order_discount,
+                                'order_tax'     => $order_tax,
+                                'shipping'      => $shipping,
+                            );  
+                            $o_date = $date;
+                            $o_reference = $reference;
+                            $o_customer_code = $customer_code;
+                            $o_order_discount = $order_discount;
+                            $o_order_tax = $order_tax;
+                            $o_shipping = $shipping;
+                        }
+                    }
+                }
+                
+                if($finals){
+                    foreach($finals as $final){
+                        $index = $final['date']."_".$final['reference']."_".$final['customer_code'];
+                        $customer = $this->site->getCustomerByCode($final['customer_code']);
+                        if(!$customer){
+                            $this->session->set_flashdata('error', lang("customer_code") . " (" . $final['customer_code'] . "). " . lang("code__exist"));
+                            admin_redirect("sales/import_sale");
+                        }
+                        $product = $this->site->getProductByCode($final['product_code']);
+                        if(!$product){
+                            $this->session->set_flashdata('error', lang("product_code") . " (" . $final['product_code'] . "). " . lang("code__exist"));
+                            admin_redirect("sales/import_sale");
+                        }
+                        if (isset($final['unit']) && $final['unit']) {
+                            $unit = $this->site->getProductUnitByCodeName($product->id,$final['unit']);
+                            if(!$unit){
+                                $this->session->set_flashdata('error', lang("unit_code") . " (" . $final['product_code']." - ".$final['unit'] . "). " . lang("code__exist"));
+                                admin_redirect("sales/import_sale");
+                            }
+                        }else{
+                            $unit = $this->site->getProductUnitByCodeName($product->id,$product->unit);
+                        }
+                        if (isset($final['order_tax']) && $final['order_tax']) {
+                            $order_tax = $this->site->getTaxRateByCode($final['order_tax']);
+                            if(!$order_tax){
+                                $this->session->set_flashdata('error', lang("order_tax") . " (" . $final['order_tax'] . "). " . lang("code__exist"));
+                                admin_redirect("sales/import_sale");
+                            }
+                        }else{
+                            $order_tax = "";
+                        }
+
+                        $sale = array(  'date'              => $final['date'],
+                                        'reference_no'      => $final['reference'],
+                                        'customer_id'       => $customer->id,
+                                        'customer'          => $customer->company,
+                                        'biller_id'         => $biller_id,
+                                        'biller'            => $biller,
+                                        'project_id'        => $project_id,
+                                        'warehouse_id'      => $warehouse_id,
+                                        'order_discount_id' => $final['order_discount'],
+                                        'shipping'          => $final['shipping'],
+                                        'sale_status'       => "completed",
+                                        'payment_status'    => "pending",
+                                        'created_by'        => $this->session->userdata('user_id'),
+                                        'delivery_status'   => "pending",
+                                        'order_tax'         => $order_tax,
+                                        'ar_account'        => $saleAcc->ar_acc,          
+                                    );  
+                        $pr_discount = 0;           
+                        if (isset($final['discount']) && $final['discount']) {
+                            $discount = $final['discount'];
+                            $dpos = strpos($discount, '%');
+                            if ($dpos !== FALSE) {
+                                $pds = explode("%", $discount);
+                                $pr_discount = $this->bpas->formatDecimalRaw(((($this->bpas->formatDecimalRaw($final['price'])) * (Float)($pds[0])) / 100), 11);
+                            } else {
+                                $pr_discount = $this->bpas->formatDecimalRaw($discount,11);
+                            }
+                        }
+                        $unit_price = $final['price'] - $pr_discount;
+                        $subtotal = $unit_price * $final['quantity'];
+                            
+                        $sale_item = array(
+                                    'product_id'        => $product->id,
+                                    'product_code'      => $product->code,
+                                    'product_name'      => $product->name,
+                                    'product_type'      => $product->type,
+                                    'real_unit_price'   => $final['price'],
+                                    'net_unit_price'    => $unit_price,
+                                    'unit_price'        => $unit_price,
+                                    'quantity'          => $final['quantity'] * ($unit->unit_qty > 1 ? $unit->unit_qty : 1),
+                                    'product_unit_id'   => $unit->unit_id,
+                                    'product_unit_code' => $unit->code,
+                                    'unit_quantity'     => $final['quantity'],
+                                    'warehouse_id'      => $warehouse_id,
+                                    'discount'          => $final['discount'],
+                                    'item_discount'     => $pr_discount * $final['quantity'],
+                                    'subtotal'          => $subtotal,
+                                    'cost'              => $product->cost,
+                                    'unit_qty'          => $unit->unit_qty
+                                );          
+                                    
+
+                        $sales[$index] = $sale;
+                        $sale_items[$index][] = $sale_item;
+                    }
+                    if($sales && $sale_items){
+                        foreach($sales as $index => $sale){
+                            $total = 0;
+                            $product_discount = 0;
+                            if($sale_items[$index]){
+                                $total_items = 0;
+
+                                foreach($sale_items[$index] as $sale_item){
+                                    $total += $sale_item['subtotal'];
+                                    $product_discount += $sale_item['item_discount'];
+                                    $total_items += $sale_item['quantity'];
+                                    
+                                    if ($this->Settings->overselling != 1) {
+                                        if(isset($qty_stockmoves[$sale_item["product_id"]]) && $qty_stockmoves[$sale_item["product_id"]]){
+                                            $qty_stockmoves[$sale_item["product_id"]] = $qty_stockmoves[$sale_item["product_id"]] + $sale_item["quantity"];
+                                        }else{
+                                            $qty_stockmoves[$sale_item["product_id"]] =  $sale_item["quantity"];
+                                        }
+                                    }
+                                    
+                                    if($this->Settings->module_account == 1){     
+                                        $productAcc = $this->site->getProductAccByProductId($sale_item["product_id"]);
+                                        $accTrans[$index][] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_date'     => $sale["date"],
+                                            'reference'     => $sale["reference_no"],
+                                            'account_code'  => $productAcc->stock_account,
+                                            'amount'        => -($sale_item["cost"] * $sale_item["quantity"]),
+                                            'narrative'     => 'Product Code: '.$sale_item["product_code"].'#'.'Qty: '.$sale_item["quantity"].'#'.'Cost: '.$sale_item["cost"],
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                        );
+                                        $accTrans[$index][] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_date'     => $sale["date"],
+                                            'reference'     => $sale["reference_no"],
+                                            'account_code'  => $productAcc->cost_acc,
+                                            'amount'        => ($sale_item["cost"] * $sale_item["quantity"]),
+                                            'narrative'     => 'Product Code: '.$sale_item["product_code"].'#'.'Qty: '.$sale_item["quantity"].'#'.'Cost: '.$sale_item["cost"],
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                        );
+                                        $accTrans[$index][] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_date'     => $sale["date"],
+                                            'reference'     => $sale["reference_no"],
+                                            'account_code'  => $productAcc->sale_acc,
+                                            'amount'        => -($sale_item["unit_quantity"] * $sale_item["unit_price"]),
+                                            'narrative'     => 'Product Code: '.$sale_item["product_code"].'#'.'Qty: '.$sale_item["unit_quantity"].'#'.'Price: '.$sale_item["unit_price"],
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                        );
+                                    }
+                                    
+                                }
+                                
+                                $order_discount = 0;
+                                $order_tax = 0;
+                                if (isset($sale['order_discount_id']) && $sale['order_discount_id']) {
+                                    $ordiscount = $sale['order_discount_id'];
+                                    $dpos = strpos($ordiscount, '%');
+                                    if ($dpos !== FALSE) {
+                                        $rds = explode("%", $ordiscount);
+                                        $order_discount = $this->bpas->formatDecimalRaw(((($this->bpas->formatDecimalRaw($total)) * (Float)($rds[0])) / 100), 11);
+                                    } else {
+                                        $order_discount = $this->bpas->formatDecimalRaw($ordiscount,11);
+                                    }
+                                }
+                                $sale["total_items"] = $total_items;
+                                $sale["total"] = $total;
+                                $sale["product_discount"] = $product_discount;
+                                $sale["order_discount"] = $order_discount;
+                                $sale["total_discount"] = $product_discount + $order_discount;
+                                if($sale["order_tax"]){
+                                    $order_tax_id = $sale["order_tax"]->id;
+                                    if ($sale["order_tax"]->type == 2) {
+                                        $order_tax = $this->bpas->formatDecimal($sale["order_tax"]->rate);
+                                    }
+                                    if ($sale["order_tax"]->type == 1) {
+                                        $order_tax = $this->bpas->formatDecimal(((($total - $order_discount) * $sale["order_tax"]->rate) / 100), 4);
+                                    }
+                                    $sale["order_tax_id"] = $order_tax_id;
+                                    $sale["order_tax"] = $order_tax;
+                                    $sale["total_tax"] = $order_tax;
+                                }
+                                $grand_total = $this->bpas->formatDecimal(($total + $order_tax + $sale["shipping"] - $order_discount), 4);
+                                $sale["grand_total"] = $grand_total;
+                                
+                                
+                                if($this->Settings->module_account == 1){           
+                                    $saleAcc = $this->site->getAccountSettingByBiller($biller_id);
+                                    $accTrans[$index][] = array(
+                                        'tran_type'     => 'Sale',
+                                        'tran_date'     => $sale["date"],
+                                        'reference_no'  => $sale["reference_no"],
+                                        'account_code'  => $saleAcc->ar_acc,
+                                        'amount'        => $grand_total,
+                                        'narrative'     => 'Sale',
+                                        'biller_id'     => $biller_id,
+                                        'project_id'    => $project_id,
+                                        'created_by'    => $this->session->userdata('user_id'),
+                                        'customer_id'   => $sale["customer_id"],
+                                    );
+                                    
+                                    if($order_discount > 0){
+                                        $accTrans[$index][] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_date'     => $sale["date"],
+                                            'reference_no'  => $sale["reference_no"],
+                                            'account_code'  => $saleAcc->sale_discount_acc,
+                                            'amount'        => $order_discount,
+                                            'narrative'     => 'Order Discount',
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                            'customer_id'   => $sale["customer_id"],
+                                        );
+                                    }
+                                    if($order_tax > 0){
+                                        $accTrans[$index][] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_date'     => $sale["date"],
+                                            'reference_no'  => $sale["reference_no"],
+                                            'account_code'  => $saleAcc->vat_output,
+                                            'amount'        => -$order_tax,
+                                            'narrative'     => 'Order Tax',
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                            'customer_id'   => $sale["customer_id"],
+                                        );
+                                    }
+                                    if($sale["shipping"] > 0){
+                                        $accTrans[$index][] = array(
+                                            'tran_type'     => 'Sale',
+                                            'tran_date'     => $sale["date"],
+                                            'reference_no'  => $sale["reference_no"],
+                                            'account_code'  => $saleAcc->shipping_acc,
+                                            'amount'        => -$sale["shipping"],
+                                            'narrative'     => 'Shipping',
+                                            'biller_id'     => $biller_id,
+                                            'project_id'    => $project_id,
+                                            'created_by'    => $this->session->userdata('user_id'),
+                                            'customer_id'   => $sale["customer_id"],
+                                        );
+                                    }
+                                    
+                                }
+                                $sales[$index] = $sale;
+                            }
+                        }
+                    }
+                    
+                }
+            }
+            if (empty($sales) || empty($sale_items)) {
+                $this->form_validation->set_rules('product', lang("order_items"), 'required');
+            }else if ($this->Settings->overselling != 1) {
+                if($qty_stockmoves){
+                    foreach($qty_stockmoves as $product_id => $qty){
+                        $p_balance = $this->site->getProductQty($product_id,$warehouse_id);
+                        if($p_balance->quantity < $qty){
+                            $product = $this->site->getProductByID($product_id);
+                            $this->session->set_flashdata('error', lang("product_code") . " (" . $final['product_code'] . "). " . lang("out_of_stock"));
+                            admin_redirect("sales/import_sale");
+                        }
+                    }
+                }
+            }
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->importSale($sales,$sale_items,$accTrans)) {
+            $this->session->set_flashdata('message', lang("sale_imported"));
+            admin_redirect('sales');
+        } else {
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['warehouses'] = $this->site->getWarehouses();
+            $this->data['billers'] = $this->site->getBillers();
+            $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sales')), array('link' => '#', 'page' => lang('import_sale')));
+            $meta = array('page_title' => lang('import_sale'), 'bc' => $bc);
+            $this->page_construct('sales/import_sale', $meta, $this->data);
+        }
+    }
+
+    public function sell_gift_card()
+    {
+        $this->bpas->checkPermissions('gift_cards', true);
+        $error  = null;
+        $gcData = $this->input->get('gcdata');
+        if (empty($gcData[0])) {
+            $error = lang('value') . ' ' . lang('is_required');
+        }
+        if (empty($gcData[1])) {
+            $error = lang('card_no') . ' ' . lang('is_required');
+        }
+        $customer_details = (!empty($gcData[2])) ? $this->site->getCompanyByID($gcData[2]) : null;
+        $customer         = $customer_details ? $customer_details->company : null;
+        $data             = [
+            'card_no'     => $gcData[0],
+            'value'       => $gcData[1],
+            'customer_id' => (!empty($gcData[2])) ? $gcData[2] : null,
+            'customer'    => $customer,
+            'balance'     => $gcData[1],
+            'expiry'      => (!empty($gcData[3])) ? $this->bpas->fsd($gcData[3]) : null,
+            'created_by'  => $this->session->userdata('user_id'),
+        ];
+        if (!$error) {
+            if ($this->sales_model->addGiftCard($data)) {
+                $this->bpas->send_json(['result' => 'success', 'message' => lang('gift_card_added')]);
+            }
+        } else {
+            $this->bpas->send_json(['result' => 'failed', 'message' => $error]);
+        }
+    }
+    
+    public function suggestions($pos = 0)
+    {
+        $term         = $this->input->get('term', true);
+        $warehouse_id = $this->input->get('warehouse_id', true);
+        $customer_id  = $this->input->get('customer_id', true);
+        if (strlen($term) < 1 || !$term) {
+            die("<script type='text/javascript'>setTimeout(function(){ window.top.location.href = '" . admin_url('welcome') . "'; }, 10);</script>");
+        }
+        $analyzed       = $this->bpas->analyze_term($term);
+        $sr             = $analyzed['term'];
+        $option_id      = $analyzed['option_id'];
+        $warehouse      = $this->site->getWarehouseByID($warehouse_id);
+        $customer       = $this->site->getCompanyByID($customer_id);
+        $customer_group = $this->site->getCustomerGroupByID($customer->customer_group_id);
+        $rows           = $this->sales_model->getProductNames($sr, $warehouse_id, $pos);
+        if ($rows) {
+            $r = 0; $pr = array();
+            foreach ($rows as $row) {
+                $c = uniqid(mt_rand(), true);
+                $promotions = $this->promos_model->getPromotionByProduct($warehouse_id, $row->category_id, $row->id);
+                $discount_promotion = 0;
+                if ($promotions) {
+                    foreach ($promotions as $promotion) {
+                        $discount_promotion = $promotion->discount;
+                    }
+                }
+                $cate_id = $row->subcategory_id?$row->subcategory_id:$row->category_id;
+                unset($row->cost, $row->details, $row->product_details, $row->image, $row->barcode_symbology, $row->cf1, $row->cf2, $row->cf3, $row->cf4, $row->cf5, $row->cf6, $row->supplier1price, $row->supplier2price, $row->cfsupplier3price, $row->supplier4price, $row->supplier5price, $row->supplier1, $row->supplier2, $row->supplier3, $row->supplier4, $row->supplier5, $row->supplier1_part_no, $row->supplier2_part_no, $row->supplier3_part_no, $row->supplier4_part_no, $row->supplier5_part_no);
+                $option               = false;
+                $row->qty             = 1;
+                $row->quantity        = 0;
+                $row->base_quantity   = 1;
+                $row->discount        = 0;
+                $row->item_tax_method = $row->tax_method;      
+                if ($discount_promotion != 0) {
+                    $row->discount    = $discount_promotion;
+                } else if ($this->Settings->customer_group_discount == 2 && !empty($customer_group)) {
+                    $row->discount    = (-1 * $customer_group->percent) . "%";
+                }
+                $row->serial          = '';
+                $options              = $this->sales_model->getProductOptions($row->id, $warehouse_id);
+                if ($options) {
+                    $opt = $option_id && $r == 0 ? $this->site->getProductOptionByID($option_id) : $options[0];
+                    if (!$option_id || $r > 0) {
+                        $option_id = $opt->id;
+                    }
+                } else {
+                    $opt        = json_decode('{}');
+                    $opt->price = 0;
+                    $option_id  = false;
+                }
+                $row->option = $option_id;
+                $pis = $this->site->getStockMovement_ProductBalanceQuantity($row->id, $warehouse_id, $row->option);
+                if ($pis) {
+                    $row->quantity = $pis->quantity_balance;
+                }
+                $set_price = $this->site->getUnitByProId($row->id);
+                if ($customer->price_group_id) {
+                    if ($pr_group_price = $this->site->getProductGroupPrice($row->id, $customer->price_group_id)) {
+                        $set_price = $this->site->getUnitByProId_PG($row->id, $customer->price_group_id);
+                    }
+                }
+                $cost_price_by_unit = $this->site->getProductCostPriceByUnit($row->id, $row->sale_unit);
+                $row->price         = ($cost_price_by_unit ? $cost_price_by_unit->price : $row->price);
+                if ($this->bpas->isPromo($row)) {
+                    $row->price = $row->promo_price;
+                } elseif ($customer->price_group_id) {
+                    if ($pr_group_price = $this->site->getProductGroupPrice($row->id, $customer->price_group_id)) {
+                        $row->price = $pr_group_price->price;
+                    }
+                } elseif ($warehouse->price_group_id) {
+                    if ($pr_group_price = $this->site->getProductGroupPrice($row->id, $warehouse->price_group_id)) {
+                        $row->price = $pr_group_price->price;
+                    }
+                }   
+                $row->real_unit_price = $row->price;
+                $row->base_unit_price = $row->price;
+                $row->base_unit       = $row->unit;
+                $row->unit            = $row->sale_unit ? $row->sale_unit : $row->unit;
+                $row->comment         = '';
+                $categories           = $this->site->getCategoryByID($cate_id);
+                $fiber_type           = $this->sales_model->getFiberTypeById($row->id);
+                $combo_items          = $row->type == 'combo' ? $this->sales_model->getProductComboItems($row->id, $warehouse_id) : false;
+                $units                = $this->site->getUnitsByBUID($row->base_unit);
+                $tax_rate             = $this->site->getTaxRateByID($row->tax_rate);
+                $fibers               = array('fiber' => $categories, 'type' => $fiber_type);
+                $stock_items          = $this->site->getStockMovementByProductID($row->id, $warehouse_id, $row->option);
+                if ($stock_items) {
+                    foreach ($stock_items as $pi) {
+                        if ($this->Settings->overselling != 1 || ($this->Settings->overselling == 1 && $warehouse->overselling != 1)) {
+                            if ($pi->quantity_balance > 0) {
+                                $pr[] = [
+                                    'id'  => sha1($c . $r), 'item_id' => $row->id, 'label' => $row->name. ' (' . $row->code . ')' .($pi->expiry != null ?  ' ('.$pi->expiry .')' : ''), 'category' => $row->category_id,
+                                    'row' => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 'units' => $units, 'set_price' => $set_price, 'options' => $options, 'fiber' => $fibers, 'pitems' => $stock_items, 'expiry' => $pi->expiry 
+                                ];
+                                $r++;
+                            }
+                        } else {
+                            $pr[] = [
+                                'id'  => sha1($c . $r), 'item_id' => $row->id, 'label' => $row->name. ' (' . $row->code . ')' .($pi->expiry != null ?  ' ('.$pi->expiry .')' : ''), 'category' => $row->category_id,
+                                'row' => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 'units' => $units, 'set_price' => $set_price, 'options' => $options, 'fiber' => $fibers, 'pitems' => $stock_items, 'expiry' => $pi->expiry 
+                            ];
+                            $r++;
+                        }
+                    }
+                } elseif ($row->type != 'standard' || ($row->type == 'standard' && $this->Settings->overselling == 1 && $warehouse->overselling == 1)) {
+                    $pr[] = ['id' => sha1($c . $r), 'item_id' => $row->id, 'label' => $row->name . ' (' . $row->code . ')', 'category' => $row->category_id, 'row' => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 'units' => $units,  'set_price' => $set_price, 'options' => $options, 'fiber' => $fibers, 'expiry' => null];
+                    $r++;
+                } else {
+                    // $this->bpas->send_json([['id' => 0, 'label' => lang('no_match_found'), 'value' => $term]]);
+                }
+            }
+            $this->bpas->send_json($pr);
+        } else {
+            $this->bpas->send_json([['id' => 0, 'label' => lang('no_match_found'), 'value' => $term]]);
+        }
+    }
+    
+    public function getCustomerGroupByCustomerID_ajax($id = null) 
+    {
+        if (!empty($id)) {
+            $customer = $this->site->getCompanyByID($id);
+            if ($customer_group = $this->site->getCustomerGroupByID($customer->customer_group_id)) {
+                $this->bpas->send_json($customer_group);
+            }
+            $this->bpas->send_json(false);
+        }
+        $this->bpas->send_json(false);
+    }
+
+    public function searchroom($pos = 0)
+    { 
+        $term         = $this->input->get('term', true);   
+        $warehouse_id = $this->input->get('warehouse_id', true);
+        $customer_id  = $this->input->get('customer_id', true);
+        if (strlen($term) < 1 || !$term) {
+            die("<script type='text/javascript'>setTimeout(function(){ window.top.location.href = '" . admin_url('welcome') . "'; }, 10);</script>");
+        }
+        $analyzed  = $this->bpas->analyze_term($term);
+        $sr        = $analyzed['term'];
+        $option_id = $analyzed['option_id'];
+        $warehouse      = $this->site->getWarehouseByID($warehouse_id);
+        $customer       = $this->site->getCompanyByID($customer_id);
+        $customer_group = $this->site->getCustomerGroupByID($customer->customer_group_id);
+        // $rows           = $this->sales_model->getProductNames($sr, $warehouse_id, $pos);
+        $rows           = $this->sales_model->getsuspend_note($sr, $warehouse_id, $pos);
+        //$this->sales_model->getRoomNames($sr);
+        //$this->sales_model->getProductNames($sr, $warehouse_id, $pos);
+        if ($rows) {
+            $r = 0; $pr = array();
+            foreach ($rows as $row) {
+                $c = uniqid(mt_rand(), true);
+                $option               = false;
+                $row->quantity        = 0;
+                $row->item_tax_method = 0;
+                $row->qty             = 1;
+                $row->discount        = '0';
+                $row->serial          = '';
+                $options              = false;
+                $product_options      = null;
+                $row->quantity        = 0;
+                $row->code            = '';
+                $opt                  = json_decode('{}');
+                $opt->price           = 0;
+                $option_id            = false;
+                $row->option          = $option_id;
+                $row->price           = $row->price + (($row->price * $customer_group->percent) / 100); 
+                $row->real_unit_price = $row->price;
+                $row->base_unit_price = $row->price;
+                $row->base_quantity   = 1;
+                $row->base_unit       = $row->bed;
+                $row->unit            = $row->bed;
+                $row->comment         = '';
+                $room_options         = $this->table_model->getRoomOptionsByRoomID($row->id);
+                $row->room_option     = !empty($room_options) ? $room_options[0]->id : null;
+                $combo_items          = false;
+                $categories           = null;
+                $units                = $row->bed;
+                $tax_rate             = null;
+                $set_price            = $this->site->getUnitByProId($row->id);
+                $pr[] = [
+                    'id'  => sha1($c . $r), 'item_id' => $row->id, 'label' => $row->name , 'category' => null,
+                    'row' => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 'set_price'=> $set_price, 
+                    'units' => $units, 'options' => $options, 'fiber' => null, 'product_options' => $product_options, 'room_options' => $room_options
+                ];
+                $r++;
+            }
+            $this->bpas->send_json($pr);
+        } else {
+            $this->bpas->send_json([['id' => 0, 'label' => lang('no_match_found'), 'value' => $term]]);
+        }
+    }
+
+        // public function getsuspend_note($suspend_id = null, $warehouse_id = null)
+        // {
+        //     $this->bpas->checkPermissions('index');
+
+        //     if ($this->input->get('suspend_id')) {
+        //         $sId = $this->input->get('suspend_id', true);
+        //     }
+
+        //     if ($this->input->get('warehouse_id')) {
+        //         $warehouse_id = $this->input->get('warehouse_id', true);
+        //     }
+            
+        //     $combo = $this->sales_model->getSuspendComboItems($sId);
+            
+        //     if ($combo) {
+        //         $c = rand(100000, 9999999);
+        //         foreach ($combo as $combo_item) {
+        //             $warehouse = $this->site->getWarehouseByID($warehouse_id);
+        //             $row       = $this->sales_model->getWHProductById($combo_item->id, $warehouse_id);
+        //             $option    = false;
+        //             if ($row) {
+        //                 unset($row->cost, $row->details, $row->product_details, $row->image, $row->barcode_symbology, $row->cf1, $row->cf2, $row->cf3, $row->cf4, $row->cf5, $row->cf6, $row->supplier1price, $row->supplier2price, $row->cfsupplier3price, $row->supplier4price, $row->supplier5price, $row->supplier1, $row->supplier2, $row->supplier3, $row->supplier4, $row->supplier5, $row->supplier1_part_no, $row->supplier2_part_no, $row->supplier3_part_no, $row->supplier4_part_no, $row->supplier5_part_no);
+        //                 $row->item_tax_method = $row->tax_method;
+        //                 $row->qty             = $combo_item->qty;
+        //                 $row->price           = 0;
+        //                 $row->discount        = '0';
+        //                 $row->serial          = '';
+        //                 $options              = $this->sales_model->getProductOptions($row->id, $warehouse_id);
+        //                 if ($options) {
+        //                     $opt = current($options);
+        //                     if (!$option) {
+        //                         $option = $opt->id;
+        //                     }
+        //                 }
+        //                 $row->currency        = $row->currency;
+        //                 $row->option          = $option;
+        //                 $row->real_unit_price = $combo_item->unit_price;
+        //                 $row->base_quantity   = $combo_item->qty;
+        //                 $row->base_unit       = $row->unit;
+        //                 $row->base_unit_price = $combo_item->unit_price;
+        //                 $row->unit            = $row->sale_unit ? $row->sale_unit : $row->unit;
+        //                 $row->comment         = '';
+        //                 $combo_items          = false;
+        //                 $tax_rate = false;
+        //                 $units    = $this->site->getUnitsByBUID($row->base_unit);
+        //                 $this->site->getTaxRateByID($row->tax_rate);
+        //                 $ri = $this->Settings->item_addition ? $row->id : $c;
+        //                 $pr[] = ['id' => sha1(uniqid(mt_rand(), true)), 'item_id' => $row->id, 'label' => $row->name . ' (' . $row->code . ')', 'category' => $row->category_id, 'row' => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 'units' => $units, 'options' => $options];
+        //             } else {
+        //                 echo null;
+        //             }
+        //         }
+                
+        //         $this->bpas->send_json($pr);
+        //     } else {
+        //         echo null;
+        //     }
+        // }
+
+    public function getProductCombo($product_id = null, $warehouse_id = null){
+        $this->bpas->checkPermissions('index');
+
+        if ($this->input->get('product_id')) {
+            $pId = $this->input->get('product_id', true);
+        }
+
+        if ($this->input->get('warehouse_id')) {
+            $warehouse_id = $this->input->get('warehouse_id', true);
+        }
+        
+        $combo = $this->sales_model->getProductComboItems($pId);
+        if ($combo) {
+            $c = rand(100000, 9999999);
+            foreach ($combo as $combo_item) {
+                $warehouse = $this->site->getWarehouseByID($warehouse_id);
+                $row       = $this->sales_model->getWHProductById($combo_item->id, $warehouse_id);
+                $option    = false;
+                if ($row) {
+                    unset($row->cost, $row->details, $row->product_details, $row->image, $row->barcode_symbology, $row->cf1, $row->cf2, $row->cf3, $row->cf4, $row->cf5, $row->cf6, $row->supplier1price, $row->supplier2price, $row->cfsupplier3price, $row->supplier4price, $row->supplier5price, $row->supplier1, $row->supplier2, $row->supplier3, $row->supplier4, $row->supplier5, $row->supplier1_part_no, $row->supplier2_part_no, $row->supplier3_part_no, $row->supplier4_part_no, $row->supplier5_part_no);
+                    $row->item_tax_method = $row->tax_method;
+                    $row->qty             = $combo_item->qty;
+                    $row->price           = 0;
+                    $row->discount        = '0';
+                    $row->serial          = '';
+                    $options              = $this->sales_model->getProductOptions($row->id, $warehouse_id);
+                    if ($options) {
+                        $opt = current($options);
+                        if (!$option) {
+                            $option = $opt->id;
+                        }
+                    }
+                    $row->currency        = $row->currency;
+                    $row->option          = $option;
+                    $row->real_unit_price = $combo_item->unit_price;
+                    $row->base_quantity   = $combo_item->qty;
+                    $row->base_unit       = $row->unit;
+                    $row->base_unit_price = $combo_item->unit_price;
+                    $row->unit            = $row->sale_unit ? $row->sale_unit : $row->unit;
+                    $row->comment         = '';
+                    $combo_items          = false;
+                    $tax_rate = false;
+                    $units    = $this->site->getUnitsByBUID($row->base_unit);
+                    $set_price = $this->site->getUnitByProId($row->id);
+                    $this->site->getTaxRateByID($row->tax_rate);
+                    $ri = $this->Settings->item_addition ? $row->id : $c;
+                    $pr[] = ['id' => sha1(uniqid(mt_rand(), true)), 'item_id' => $row->id, 'label' => $row->name . ' (' . $row->code . ')', 'category' => $row->category_id, 'row' => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 'set_price'->$set_price,'units' => $units, 'options' => $options];
+                } else {
+                    echo null;
+                }
+            }
+            
+            $this->bpas->send_json($pr);
+        } else {
+            echo null;
+        }
+    }
+    public function topup_gift_card($card_id)
+        {
+            $this->bpas->checkPermissions('add_gift_card', true);
+            $card = $this->site->getGiftCardByID($card_id);
+            $this->form_validation->set_rules('amount', lang('amount'), 'trim|integer|required');
+
+            if ($this->form_validation->run() == true) {
+                $data = ['card_id' => $card_id,
+                'amount'       => $this->input->post('amount'),
+                'date'         => date('Y-m-d H:i:s'),
+                'created_by'   => $this->session->userdata('user_id'),
+            ];
+            $card_data['balance'] = ($this->input->post('amount') + $card->balance);
+                // $card_data['value'] = ($this->input->post('amount')+$card->value);
+            if ($this->input->post('expiry')) {
+                $card_data['expiry'] = $this->bpas->fld(trim($this->input->post('expiry')));
+            }
+        } elseif ($this->input->post('topup')) {
+            $this->session->set_flashdata('error', validation_errors());
+            admin_redirect('sales/gift_cards');
+        }
+
+        if ($this->form_validation->run() == true && $this->sales_model->topupGiftCard($data, $card_data)) {
+            $this->session->set_flashdata('message', lang('topup_added'));
+            admin_redirect('sales/gift_cards');
+        } else {
+            $this->data['error']      = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['modal_js']   = $this->site->modal_js();
+            $this->data['card']       = $card;
+            $this->data['page_title'] = lang('topup_gift_card');
+            $this->load->view($this->theme . 'sales/topup_gift_card', $this->data);
+        }
+    }
+    public function update_status($id)
+    {
+        $this->form_validation->set_rules('status', lang('sale_status'), 'required');
+
+        if ($this->form_validation->run() == true) {
+            $status = $this->input->post('status');
+            $note   = $this->bpas->clear_tags($this->input->post('note'));
+        } elseif ($this->input->post('update')) {
+            $this->session->set_flashdata('error', validation_errors());
+            admin_redirect(isset($_SERVER['HTTP_REFERER']) ? $_SERVER['HTTP_REFERER'] : 'sales');
+        }
+
+        if ($this->form_validation->run() == true && $this->sales_model->updateStatus($id, $status, $note)) {
+            $this->session->set_flashdata('message', lang('status_updated'));
+            admin_redirect(isset($_SERVER['HTTP_REFERER']) ? $_SERVER['HTTP_REFERER'] : 'sales');
+        } else {
+            $this->data['inv']      = $this->sales_model->getInvoiceByID($id);
+            $this->data['returned'] = false;
+            if ($this->data['inv']->sale_status == 'returned' || $this->data['inv']->return_id) {
+                $this->data['returned'] = true;
+            }
+            $this->data['modal_js'] = $this->site->modal_js();
+            $this->load->view($this->theme . 'sales/update_status', $this->data);
+        }
+    }
+    public function validate_gift_card($no)
+    {
+        if ($gc = $this->site->getGiftCardByNO($no)) {
+            if ($gc->expiry) {
+                if ($gc->expiry >= date('Y-m-d')) {
+                    $this->bpas->send_json($gc);
+                } else {
+                    $this->bpas->send_json(false);
+                }
+            } else {
+                $this->bpas->send_json($gc);
+            }
+        } else {
+            $this->bpas->send_json(false);
+        }
+    }
+    public function view($id = null , $issue_inv=null)
+    {
+        $this->bpas->checkPermissions('index');
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        
+        if ($this->input->get('issue_inv')) {
+            $issue_inv = $this->input->get('issue_inv');
+        }
+
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $inv                 = $this->sales_model->getInvoiceByID($id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by);
+        }
+        $inv_down_payment          = $this->sales_model->getInvoicedownPaymentstatus($id);
+        $this->data['barcode']     = "<img src='" . admin_url('products/gen_barcode/' . $inv->reference_no) . "' alt='" . $inv->reference_no . "' class='pull-left' />";
+        $this->data['customer']    = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['payments']    = $this->sales_model->getPaymentsForSale($id);
+        $this->data['biller']      = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['created_by']  = $this->site->getUser($inv->created_by);
+        $this->data['updated_by']  = $inv->updated_by ? $this->site->getUser($inv->updated_by) : null;
+        $this->data['warehouse']   = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['inv']         = $inv;
+        $this->data['issue_inv']   =$issue_inv;
+        $this->data['down_payment']= $inv_down_payment;
+        $this->data['get_all_down_payments'] = $this->sales_model->getInvoicedownPayments($id,'');
+        $this->data['rows']        = $this->sales_model->getAllInvoiceItems($id);
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        $this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+        $this->data['paypal']      = $this->sales_model->getPaypalSettings();
+        $this->data['skrill']      = $this->sales_model->getSkrillSettings();
+        $this->data['KHM']  = $this->bpas->getExchange_rate('KHR');
+        $this->data['BAT']  = $this->bpas->getExchange_rate('THB');
+        $this->data['TotalSalesDue'] = $this->sales_model->getTotalSalesDue($inv->customer_id,'');
+        $this->data['sold_by']  = $this->site->getsaleman($inv->saleman_by);
+
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('view')]];
+        $meta = ['page_title' => lang('view_sales_details'), 'bc' => $bc];
+        //    $this->page_construct('sales/view', $meta, $this->data);
+        $this->page_construct('sales/view', $meta, $this->data);
+    }
+    public function view_Invoce_downpayment($id = null)
+    {
+        $this->bpas->checkPermissions('index');
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $inv                 = $this->sales_model->getInvoiceByID($id);
+        $inv_down_payment     = $this->sales_model->getInvoicedownPaymentstatus($id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by);
+        }
+        $this->data['barcode']       = "<img src='" . admin_url('products/gen_barcode/' . $inv->reference_no) . "' alt='" . $inv->reference_no . "' class='pull-left' />";
+        $this->data['customer']      = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['payments']      = $this->sales_model->getPaymentsForSale($id);
+        $this->data['biller']        = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['created_by']    = $this->site->getUser($inv->created_by);
+        $this->data['updated_by']    = $inv->updated_by ? $this->site->getUser($inv->updated_by) : null;
+        $this->data['warehouse']     = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['inv']           = $inv;
+        $this->data['down_payment']  = $inv_down_payment;
+        $this->data['rows']          = $this->sales_model->getAllInvoiceItems($id);
+        $this->data['return_sale']   = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        $this->data['return_rows']   = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+        $this->data['paypal']        = $this->sales_model->getPaypalSettings();
+        $this->data['skrill']        = $this->sales_model->getSkrillSettings();
+        $this->data['KHM']           = $this->bpas->getExchange_rate('KHR');
+        $this->data['BAT']           = $this->bpas->getExchange_rate('THB');
+        $this->data['TotalSalesDue'] = $this->sales_model->getTotalSalesDue($inv->customer_id,'');
+      
+
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('view')]];
+        $meta = ['page_title' => lang('view_sales_details'), 'bc' => $bc];
+        $this->load->view($this->theme . 'sales/view_inv_downpayment', $this->data);
+    }
+    public function view_none_biller($id = null)
+    {
+        $this->bpas->checkPermissions('index');
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $inv                 = $this->sales_model->getInvoiceByID($id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by);
+        }
+        $this->data['barcode']     = "<img src='" . admin_url('products/gen_barcode/' . $inv->reference_no) . "' alt='" . $inv->reference_no . "' class='pull-left' />";
+        $this->data['customer']    = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['payments']    = $this->sales_model->getPaymentsForSale($id);
+        $this->data['biller']      = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['created_by']  = $this->site->getUser($inv->created_by);
+        $this->data['updated_by']  = $inv->updated_by ? $this->site->getUser($inv->updated_by) : null;
+        $this->data['warehouse']   = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['inv']         = $inv;
+        $this->data['rows']        = $this->sales_model->getAllInvoiceItems($id);
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        $this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+        $this->data['paypal']      = $this->sales_model->getPaypalSettings();
+        $this->data['skrill']      = $this->sales_model->getSkrillSettings();
+        $this->data['KHM']  = $this->bpas->getExchange_rate('KHR');
+        $this->data['BAT']  = $this->bpas->getExchange_rate('THB');
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('view')]];
+        $meta = ['page_title' => lang('view_sales_details'), 'bc' => $bc];
+        //    $this->page_construct('sales/view', $meta, $this->data);
+        $this->page_construct('sales/view_none_biller', $meta, $this->data);
+    }
+    public function view_delivery($id = null)
+    {
+        $this->bpas->checkPermissions('deliveries');
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+
+        $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+        $deli                = $this->sales_model->getDeliveryByID($id);
+        $sale                = $this->sales_model->getInvoiceByID($deli->sale_id);
+        if (!$sale) {
+            $this->session->set_flashdata('error', lang('sale_not_found'));
+            $this->bpas->md();
+        }
+        $this->data['delivery']   = $deli;
+        $this->data['biller']     = $this->site->getCompanyByID($sale->biller_id);
+        $this->data['rows']       = $this->sales_model->getAllInvoiceItemsWithDetails($deli->sale_id);
+        $this->data['user']       = $this->site->getUser($deli->created_by);
+        $this->data['page_title'] = lang('delivery_order');
+
+        $this->load->view($this->theme . 'sales/view_delivery', $this->data);
+    }
+    public function delivery_note($id = null)
+    {
+        $this->bpas->checkPermissions('deliveries');
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+
+        $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            //$deli                = $this->sales_model->getDeliveryByID($id);
+        $deli                = $this->sales_model->getDriverByID($id);
+
+        $sale                = $this->sales_model->getInvoiceByID($deli->sale_id);
+        if (!$sale) {
+            $this->session->set_flashdata('error', lang('sale_not_found'));
+            $this->bpas->md();
+        }
+        $inv = $this->sales_model->getInvoiceByID($deli->sale_id);
+        $this->data['customer']        = $this->site->getCompanyByID($sale->customer_id);
+        $this->data['inv']  = $inv;
+        $this->data['delivery']   = $deli;
+        $this->data['biller']     = $this->site->getCompanyByID($sale->biller_id);
+        $this->data['rows']       = $this->sales_model->getAllInvoiceItemsWithDetails($deli->sale_id);
+        $this->data['user']       = $this->site->getUser($deli->created_by);
+        $this->data['page_title'] = lang('delivery_order');
+
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+            //$this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+
+        $this->load->view($this->theme . 'sales/delivery_note', $this->data);
+    }
+    public function view_gift_card($id = null)
+    {
+        $this->data['page_title'] = lang('gift_card');
+        $gift_card                = $this->site->getGiftCardByID($id);
+        $this->data['gift_card']  = $this->site->getGiftCardByID($id);
+        $this->data['customer']   = $this->site->getCompanyByID($gift_card->customer_id);
+        $this->data['topups']     = $this->sales_model->getAllGCTopups($id);
+        $this->load->view($this->theme . 'sales/view_gift_card', $this->data);
+    }
+    //---------account---------
+    function getSales_pending($warehouse_id = NULL, $dt = NULL)
+    {
+        $this->bpas->checkPermissions('index');
+
+        if ($this->input->get('user')) {
+            $user_query = $this->input->get('user');
+        } else {
+            $user_query = NULL;
+        }
+        if ($this->input->get('reference_no')) {
+            $reference_no = $this->input->get('reference_no');
+        } else {
+            $reference_no = NULL;
+        }
+        if ($this->input->get('customer')) {
+            $customer = $this->input->get('customer');
+        } else {
+            $customer = NULL;
+        }
+        if ($this->input->get('biller')) {
+            $biller = $this->input->get('biller');
+        } else {
+            $biller = NULL;
+        }
+        if ($this->input->get('warehouse')) {
+            $warehouse = $this->input->get('warehouse');
+        } else {
+            $warehouse = NULL;
+        }
+        if ($this->input->get('start_date')) {
+            $start_date = $this->input->get('start_date');
+        } else {
+            $start_date = NULL;
+        }
+
+        if ($this->input->get('search_id')) {
+            $search_id = $this->input->get('search_id');
+        } else {
+            $search_id = NULL;
+        }
+        $sale_status       = $this->input->get('sale_status') ? $this->input->get('sale_status') : null;
+        if ($this->input->get('end_date')) {
+            $end_date = $this->input->get('end_date');
+        } else {
+            $end_date = NULL;
+        }
+        if ($start_date) {
+            $start_date = $this->bpas->fld($start_date);
+            $end_date = $this->bpas->fld($end_date);
+        }
+
+        if ((!$this->Owner && !$this->Admin) && !$warehouse_id) {
+            $user = $this->site->getUser();
+            $warehouse_id = $user->warehouse_id;
+        }
+
+        $detail_link = anchor('admin/sales/view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('sale_details'));
+        $payments_link = anchor('admin/sales/payments/$1', '<i class="fa fa-money"></i> ' . lang('view_payments'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_payment_link = anchor('admin/sales/add_payment/$1', '<i class="fa fa-money"></i> ' . lang('add_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_delivery_link = anchor('admin/sales/add_delivery/$1', '<i class="fa fa-truck"></i> ' . lang('add_delivery'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $email_link = anchor('admin/sales/email/$1', '<i class="fa fa-envelope"></i> ' . lang('email_sale'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $edit_link = anchor('admin/sales/edit/$1', '<i class="fa fa-edit"></i> ' . lang('edit_sale'), 'class="sledit"');
+        $pdf_link = anchor('admin/sales/pdf/$1', '<i class="fa fa-file-pdf-o"></i> ' . lang('download_pdf'));
+        $return_link = anchor('admin/sales/return_sale/$1', '<i class="fa fa-angle-double-left"></i> ' . lang('return_sale'));
+        $delete_link = "<a href='#' class='po' title='<b>" . lang("delete_sale") . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_sale') . "</a>";
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+        <ul class="dropdown-menu pull-right" role="menu">
+        <li>' . $detail_link . '</li>'
+
+        .(($this->Owner || $this->Admin) ? '<li>'.$payments_link.'</li>' : ($this->GP['sales-payments'] ? '<li>'.$payments_link.'</li>' : '')).
+        (($this->Owner || $this->Admin) ? '<li>'.$add_payment_link.'</li>' : ($this->GP['sales-payments'] ? '<li>'.$add_payment_link.'</li>' : '')).
+        (($this->Owner || $this->Admin) ? '<li>'.$pdf_link.'</li>' : ($this->GP['accounts-export'] ? '<li>'.$pdf_link.'</li>' : '')).
+        (($this->Owner || $this->Admin) ? '<li>'.$email_link.'</li>' : ($this->GP['sales-email'] ? '<li>'.$email_link.'</li>' : '')).
+        (($this->Owner || $this->Admin) ? '<li>'.$return_link.'</li>' : ($this->GP['sales-return_sales'] ? '<li>'.$return_link.'</li>' : '')).
+
+        '</ul>
+        </div></div>';
+            //$action = '<div class="text-center">' . $detail_link . ' ' . $edit_link . ' ' . $email_link . ' ' . $delete_link . '</div>';
+
+        $this->load->library('datatables');
+        if ($warehouse_id) {
+            $wh_ids = explode('-', $warehouse_id);
+            $this->datatables
+            ->select("{$this->db->dbprefix('sales')}.id as id, 
+                {$this->db->dbprefix('sales')}.date as date, 
+                {$this->db->dbprefix('sales')}.reference_no as sale_no, 
+                {$this->db->dbprefix('sales')}.biller, 
+                {$this->db->dbprefix('sales')}.customer, 
+                {$this->db->dbprefix('sales')}.sale_status, COALESCE(bpas_sales.grand_total,0) as amount,
+                COALESCE((SELECT SUM(bpas_return_sales.grand_total) FROM bpas_return_sales WHERE bpas_return_sales.sale_id = bpas_sales.id), 0) as return_sale,
+                COALESCE((SELECT SUM(IF((bpas_payments.paid_by != 'deposit' AND ISNULL(bpas_payments.return_id)), bpas_payments.amount, IF(NOT ISNULL(bpas_payments.return_id), ((-1)*bpas_payments.amount), 0))) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id),0) as paid, 
+                COALESCE((SELECT SUM(IF(bpas_payments.paid_by = 'deposit', bpas_payments.amount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) as deposit,
+                COALESCE((SELECT SUM(bpas_payments.discount) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) as discount, 
+                (COALESCE(bpas_sales.grand_total,0)-COALESCE((SELECT SUM(bpas_return_sales.grand_total) FROM bpas_return_sales WHERE bpas_return_sales.sale_id = bpas_sales.id), 0)-COALESCE((SELECT SUM(IF((bpas_payments.paid_by != 'deposit' AND ISNULL(bpas_payments.return_id)), bpas_payments.amount, IF(NOT ISNULL(bpas_payments.return_id), ((-1)*bpas_payments.amount), 0))) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id),0) - COALESCE((SELECT SUM(IF(bpas_payments.paid_by = 'deposit', bpas_payments.amount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id  ),0)-COALESCE((SELECT SUM(bpas_payments.discount) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) ) as balance, 
+                sales.payment_status")
+            ->from('sales')
+            ->where('payment_status !=', 'paid')
+            ->where_in('warehouse_id', $wh_ids);
+        } else {
+            $this->datatables
+            ->select("{$this->db->dbprefix('sales')}.id as id, 
+                {$this->db->dbprefix('sales')}.date as date, 
+                {$this->db->dbprefix('sales')}.reference_no as sale_no, 
+                {$this->db->dbprefix('sales')}.biller, 
+                {$this->db->dbprefix('sales')}.customer, 
+                {$this->db->dbprefix('sales')}.sale_status, 
+                COALESCE(bpas_sales.grand_total,0) as amount,
+                COALESCE((SELECT SUM(bpas_return_sales.grand_total) FROM bpas_return_sales WHERE bpas_return_sales.sale_id = bpas_sales.id), 0) as return_sale,
+                COALESCE((SELECT SUM(IF((bpas_payments.paid_by != 'deposit' AND ISNULL(bpas_payments.return_id)), bpas_payments.amount, IF(NOT ISNULL(bpas_payments.return_id), ((-1)*bpas_payments.amount), 0))) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id),0) as paid, 
+                COALESCE((SELECT SUM(IF(bpas_payments.paid_by = 'deposit', bpas_payments.amount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) as deposit,
+                COALESCE((SELECT SUM(bpas_payments.discount) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) as discount, 
+                (COALESCE(bpas_sales.grand_total,0)-COALESCE((SELECT SUM(bpas_return_sales.grand_total) FROM bpas_return_sales WHERE bpas_return_sales.sale_id = bpas_sales.id), 0)-COALESCE((SELECT SUM(IF((bpas_payments.paid_by != 'deposit' AND ISNULL(bpas_payments.return_id)), bpas_payments.amount, IF(NOT ISNULL(bpas_payments.return_id), ((-1)*bpas_payments.amount), 0))) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id),0) - COALESCE((SELECT SUM(IF(bpas_payments.paid_by = 'deposit', bpas_payments.amount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id  ),0)-COALESCE((SELECT SUM(bpas_payments.discount) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) ) as balance, 
+                sales.payment_status")
+            ->from('sales')
+            ->where('payment_status !=', 'paid')
+            ->where('(bpas_sales.grand_total-bpas_sales.paid) <> ', 0);
+            if(isset($_REQUEST['d'])){
+                $date = $_GET['d'];
+                $date1 = str_replace("/", "-", $date);
+                $date =  date('Y-m-d', strtotime($date1));
+
+                $this->datatables
+                ->where("sales.date >=", $date)
+                ->where('DATE_SUB(bpas_sales.date, INTERVAL 1 DAY) <= CURDATE()')
+                ->where('sales.payment_term <>', 0);
+            }
+        }
+            //$this->datatables->where('pos !=', 1);
+        if (!$this->Customer && !$this->Supplier && !$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+           $this->datatables->where('created_by', $this->session->userdata('user_id'));
+        } elseif ($this->Customer) {
+            $this->datatables->where('customer_id', $this->session->userdata('user_id'));
+        }
+
+        if ($search_id) {
+            $this->datatables->where('sales.id', $search_id);
+        }
+
+        if ($sale_status != null) {
+            $this->db->where('sales.sale_status', $sale_status);
+        }
+        if ($user_query) {
+        $this->datatables->where('sales.created_by', $user_query);
+        }
+        /*
+            if ($customer) {
+                $this->datatables->where('sales.id', $customer);
+            }*/
+            if ($reference_no) {
+                $this->datatables->where($this->db->dbprefix('sales').'.reference_no', $reference_no);
+            }
+            if ($biller) {
+                $this->datatables->where('sales.biller_id', $biller);
+            }
+            if ($customer) {
+                $this->datatables->where('sales.customer_id', $customer);
+            }
+            if ($warehouse) {
+                $this->datatables->where('sales.warehouse_id', $warehouse);
+            }
+
+            if ($start_date) {
+                $this->datatables->where($this->db->dbprefix('sales').'.date BETWEEN "' . $start_date . '" and "' . $end_date . '"');
+            }
+
+            if($dt == 30){
+                $this->datatables->where('date('. $this->db->dbprefix('sales') .'.date) > CURDATE() AND date('. $this->db->dbprefix('sales') .'.date) <= DATE_ADD(now(), INTERVAL + 30 DAY)');
+            }elseif($dt == 60){
+                $this->datatables->where('date('. $this->db->dbprefix('sales') .'.date) > DATE_ADD(now(), INTERVAL + 30 DAY) AND date('. $this->db->dbprefix('sales') .'.date) <= DATE_ADD(now(), INTERVAL + 60 DAY)');
+            }elseif($dt == 90){
+                $this->datatables->where('date('. $this->db->dbprefix('sales') .'.date) > DATE_ADD(now(), INTERVAL + 60 DAY) AND date('. $this->db->dbprefix('sales') .'.date) <= DATE_ADD(now(), INTERVAL + 90 DAY)');
+            }elseif($dt == 91){
+                $this->datatables->where('date('. $this->db->dbprefix('sales') .'.date) >= DATE_ADD(now(), INTERVAL + 90 DAY)');
+            }
+            
+            $this->datatables->add_column("Actions", $action, "id");
+            echo $this->datatables->generate();
+    }
+    function getReferenceByProject($field,$biller_id)
+    {
+        $reference_no = $this->site->getReference($field,$biller_id);
+        echo json_encode($reference_no);
+    }
+    //------------accounting--------
+    function combine_payment()
+    {
+        $this->bpas->checkPermissions('payments', null, 'sales');
+
+        $this->load->helper('security');
+        $arr = array();
+        
+        if ($this->input->get('data'))
+        {
+            $arr = explode(',', $this->input->get('data'));
+        }
+        
+        //$this->form_validation->set_rules('reference_no', lang("reference_no"), 'required');
+        $this->form_validation->set_rules('amount-paid', lang("amount"), 'required');
+        $this->form_validation->set_rules('paid_by', lang("paid_by"), 'required');
+        $this->form_validation->set_rules('userfile', lang("attachment"), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = FALSE;
+                $config['encrypt_name'] = TRUE;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                //$payment['attachment'] = $photo;
+            }
+            $sale_id_arr        = $this->input->post('sale_id');
+            $biller_id          = $this->input->post('biller');
+            $amount_paid_arr    = $this->input->post('amount_paid_line');
+            $i = 0;
+            $reference_no       = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('so', $biller_id);
+            
+            foreach($sale_id_arr as $sale_id){
+                $get_sale = $this->sales_model->getSaleById($sale_id);
+                $payment = array(
+                    'date'          => $date,
+                    'sale_id'       => $sale_id,
+                    'reference_no'  => $reference_no,
+                    'amount'        => $amount_paid_arr[$i],
+                    'paid_by'       => $this->input->post('paid_by'),
+                    'cheque_no'     => $this->input->post('cheque_no'),
+                    'cc_no'         => $this->input->post('paid_by') == 'gift_card' ? $this->input->post('gift_card_no') : $this->input->post('pcc_no'),
+                    'cc_holder'     => $this->input->post('pcc_holder'),
+                    'cc_month'      => $this->input->post('pcc_month'),
+                    'cc_year'       => $this->input->post('pcc_year'),
+                    'cc_type'       => $this->input->post('pcc_type'),
+                    'note'          => $this->input->post('note'),
+                    'created_by'    => $this->session->userdata('user_id'),
+                    'type'          => 'received',
+                    'biller_id'     => $biller_id,
+                    'attachment'    => $photo,
+                    'bank_account'  => $this->input->post('bank_account'),
+                    'note'          => $get_sale->customer,
+                    'add_payment'   => '1'
+                );
+                $this->sales_model->addPaymentMulti($payment);
+                $i++;
+            }
+            
+            if ($this->site->getReference('so', $biller_id) == $reference_no) {
+                $this->site->updateReference('so', $biller_id);
+            }
+            $this->session->set_flashdata('message', lang("payment_added"));
+            redirect('account/list_ac_recevable');
+
+        } else{
+
+            $setting = $this->site->get_setting();
+            if($this->session->userdata('biller_id')) {
+                $biller_id = $this->session->userdata('biller_id');
+            }else {
+                $biller_id = $setting->default_biller;
+            }
+            
+            $this->data['error']            = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['billers']          = $this->site->getAllCompanies('biller');
+            $this->data['bankAccounts']     =  $this->site->getAllBankAccounts();
+            $combine_payment                = $this->sales_model->getCombinePaymentById($arr);
+            $this->data['combine_sales']    = $combine_payment;
+            $this->data['payment_ref']      = $this->site->getReference('so');
+            $this->data['reference']        = $this->site->getReference('so','');
+            $this->data['setting']          = $setting;
+            $this->data['chart_accounts']   = $this->accounts_model->getAllChartAccountIn('50,60,80');
+            $this->data['currency']         = $this->site->getCurrency();
+            $this->data['modal_js']         = $this->site->modal_js();
+
+            $this->load->view($this->theme . 'sales/combine_payment', $this->data);
+        }
+    }
+     public function getchange_base_unit_cost()
+    {
+        if ($this->input->get('unit_id')) {
+            $id = $this->input->get('unit_id');
+        }
+        if ($this->input->get('product_id')) {
+            $product_id = $this->input->get('product_id');
+        }
+        $data = $this->site->getUnitProductByID($id, $product_id);
+
+        echo json_encode($data);
+    }
+    function combine_payment_sale($id)
+    {
+        $this->bpas->checkPermissions('payments', true);
+        $this->load->helper('security');
+        $arr = array();
+        if ($this->input->get('data')){
+            $arr = explode(',', $this->input->get('data'));
+        }
+        
+        //$this->form_validation->set_rules('reference_no', lang("reference_no"), 'required');
+        $this->form_validation->set_rules('amount-paid', lang("amount"), 'required');
+        $this->form_validation->set_rules('paid_by', lang("paid_by"), 'required');
+        $this->form_validation->set_rules('userfile', lang("attachment"), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = FALSE;
+                $config['encrypt_name'] = TRUE;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $payment['attachment'] = $photo;
+            }
+            
+            $sale_id_arr        = $this->input->post('sale_id');
+            $biller_id          = $this->input->post('biller');
+            $amount_paid_arr    = $this->input->post('amount_paid_line');
+            $customer_balance   = $this->input->post('customer_balance');
+            $receivable         = $this->input->post('receivable');
+            $item_discount      = $this->input->post('discount_paid');
+            $discount           = $this->input->post('discount');
+            $percentage         = '%';
+            
+            $i = 0;
+            $reference_no = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('so', $biller_id);
+            foreach($sale_id_arr as $sale_id){
+                $get_sale = $this->sales_model->getSaleById($id);
+                if (isset($item_discount)) {
+                    $dpos = strpos($discount, $percentage);
+                    if ($dpos !== false) {
+                        $pr_discount = $this->bpas->formatDecimal($item_discount[$i]);
+                        $discount_id = $discount;
+                    } else {
+                        $pr_discount = $this->bpas->formatDecimal($item_discount[$i]);
+                        $discount_id = $item_discount[$i];
+                    }
+                }
+                
+                $payment = array(
+                    'date'          => $date,
+                    'sale_id'       => $sale_id,
+                    'reference_no'  => $reference_no,
+                    'amount'        => $amount_paid_arr[$i],
+                    //'discount_id'   => $discount_id,
+                    'discount'      => $pr_discount,
+                    'paid_by'       => $this->input->post('paid_by'),
+                    'cheque_no'     => $this->input->post('cheque_no'),
+                    'cc_no'         => $this->input->post('paid_by') == 'gift_card' ? $this->input->post('gift_card_no') : $this->input->post('pcc_no'),
+                    'cc_holder'     => $this->input->post('pcc_holder'),
+                    'cc_month'      => $this->input->post('pcc_month'),
+                    'cc_year'       => $this->input->post('pcc_year'),
+                    'cc_type'       => $this->input->post('pcc_type'),
+                    'note'          => $this->input->post('note'),
+                    'created_by'    => $this->session->userdata('user_id'),
+                    'type'          => 'received',
+                    'biller_id'     => $biller_id,
+                    'attachment'    =>$photo,
+                    'bank_account'  => $this->input->post('bank_account'),
+                    //'add_payment'   => '1'
+                );  
+                if($payment['amount'] > 0 ){
+                    $this->sales_model->addSalePaymentMulti($payment);
+                }
+                
+                $i++;
+                
+            }
+            /**========Add Expense=========**/
+            if($this->input->post('other_paid') > 0) {
+                $data = array(
+                    'date' => $date,
+                    'reference' => $payment_reference,          
+                    'amount'    => $this->input->post('other_paid'),
+                    'created_by'    => $this->session->userdata('user_id'),
+                    'note'      => $note,
+                    'account_code'  => $this->input->post('account_section'),
+                    'biller_id' => $biller_id,
+                    'bank_code' => ($this->input->post('bank_account'))?$this->input->post('bank_account'):$this->settings_model->getAccountSettings()->default_cash,
+                    'sale_id' => $sale_id,
+                    'customer_id' => $customer_id,
+                );
+                $this->db->insert("expenses", $data);
+                $expenses_id = $this->db->insert_id();
+                $payment['expense_id'] = $expenses_id;
+            }
+            /**========End Expense=========**/
+
+            $this->session->set_flashdata('message', lang("payment_added"));
+            if($customer_balance == "customer_balance"){
+                $payment_ref = str_replace('/', '_', $reference_no);
+                redirect('sales/view_payment_cus/'.$biller_id.'/'.$payment_ref.'/'.$id);
+            }elseif($receivable == "receivable"){
+                redirect('account/list_ac_recevable');
+            }else{
+                redirect('sales');
+            }
+
+        } else{
+
+            $setting = $this->site->get_setting();
+            if($this->session->userdata('biller_id')) {
+                $biller_id = $this->session->userdata('biller_id');
+            }else {
+                $biller_id = $setting->default_biller;
+            }
+            
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['billers'] = $this->site->getAllCompanies('biller');
+            $this->data['bankAccounts'] =  $this->site->getAllBankAccounts();
+            $combine_payment = $this->sales_model->getCombinePaymentBySaleId($id);
+            $this->data['combine_sales'] = $combine_payment;
+            
+            $this->data['payment_ref'] = ''; //$this->site->getReference('so');
+            if ($this->Owner || $this->Admin || !$this->session->userdata('biller_id')){
+                $biller_id = $this->site->get_setting()->default_biller;
+                $this->data['reference'] = $this->site->getReference('pp',$biller_id);
+            }else{
+                $biller_id = $this->session->userdata('biller_id');
+                $this->data['reference'] = $this->site->getReference('pp',$biller_id);
+            }
+            $this->data['setting'] = $setting;
+            $this->data['modal_js'] = $this->site->modal_js();
+            //$this->data['ids'] = 3;
+
+            $this->load->view($this->theme . 'sales/combine_payment', $this->data);
+            
+        }
+    }
+    
+    function combine_payment_customer()
+    {
+
+        $this->bpas->checkPermissions('payments', true);
+        $this->load->helper('security');
+        $arr = array();
+        if ($this->input->get('data'))
+        {
+            $arr = explode(',', $this->input->get('data'));           
+        }
+        $idd = null;
+        if ($this->input->get('idd'))
+        {
+            $idd = $this->input->get('idd');
+        }        
+
+        $this->form_validation->set_rules('amount-paid', lang("amount"), 'required');
+        $this->form_validation->set_rules('paid_by', lang("paid_by"), 'required');
+        $this->form_validation->set_rules('userfile', lang("attachment"), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = FALSE;
+                $config['encrypt_name'] = TRUE;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+            }
+            
+            $sale_id_arr = $this->input->post('sale_id');
+            $biller_id = $this->input->post('biller');
+            $amount_paid_arr = $this->input->post('amount_paid_line');
+            $i = 0;
+            $reference_no = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('so', $biller_id);
+            foreach($sale_id_arr as $sale_id){
+                $get_sale = $this->sales_model->getSaleById($sale_id);
+                
+                $payment = array(
+                    'date' => $date,
+                    'sale_id' => $sale_id,
+                    'reference_no' => $reference_no,
+                    'amount' => $amount_paid_arr[$i],
+                    'paid_by' => $this->input->post('paid_by'),
+                    'cheque_no' => $this->input->post('cheque_no'),
+                    'cc_no' => $this->input->post('paid_by') == 'gift_card' ? $this->input->post('gift_card_no') : $this->input->post('pcc_no'),
+                    'cc_holder' => $this->input->post('pcc_holder'),
+                    'cc_month' => $this->input->post('pcc_month'),
+                    'cc_year' => $this->input->post('pcc_year'),
+                    'cc_type' => $this->input->post('pcc_type'),
+                    'note' => $this->input->post('note'),
+                    'created_by' => $this->session->userdata('user_id'),
+                    'type' => 'received',
+                    'biller_id' => $biller_id,
+                    'attachment' =>$photo,
+                    'bank_account' => $this->input->post('bank_account'),
+                    'add_payment' => '1'
+                );
+                
+                if($payment['amount'] > 0 ){
+                    $this->sales_model->addSalePaymentMulti($payment);
+                }
+                
+                $i++;
+            }
+            
+            $this->session->set_flashdata('message', lang("payment_added"));
+            redirect('sales/customer_balance');
+
+        } else{
+
+            $setting = $this->site->get_setting();
+            if($this->session->userdata('biller_id')) {
+                $biller_id = $this->session->userdata('biller_id');
+            }else {
+                $biller_id = $setting->default_biller;
+            }
+            
+            $this->data['error']            = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['billers']          = $this->site->getAllCompanies('biller');
+            $this->data['bankAccounts']     = $this->site->getAllBankAccounts();
+            $this->data['userBankAccounts'] = $this->site->getAllBankAccountsByUserID();
+            $combine_payment                = $this->sales_model->getCombinePaymentBySaleId($arr);
+            $this->data['combine_sales']    = $combine_payment;
+            $this->data['payment_ref']      = ''; //$this->site->getReference('so');
+            if ($this->Owner || $this->Admin || !$this->session->userdata('biller_id')){
+                $biller_id                  = $this->site->get_setting()->default_biller;
+                $this->data['reference']    = $this->site->getReference('pp',$biller_id);
+            }else{
+                $biller_id                  = $this->session->userdata('biller_id');
+                $this->data['reference']    = $this->site->getReference('pp',$biller_id);
+                
+            }
+
+            $this->data['idd']              = $idd;
+            $this->data['setting']          = $setting;
+            $this->data['modal_js']         = $this->site->modal_js();
+            $this->data['customer_balance'] = "customer_balance"; 
+
+            $this->load->view($this->theme . 'sales/combine_payment', $this->data);
+        }
+    }
+    
+    function combine_payment_old()
+    {
+        $this->bpas->checkPermissions('payments', true);
+        $this->load->helper('security');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        //$this->form_validation->set_rules('reference_no', lang("reference_no"), 'required');
+        $this->form_validation->set_rules('form_action', lang("form_action"), 'required');
+        
+        $this->form_validation->set_rules('amount-paid', lang("amount"), 'required');
+        $this->form_validation->set_rules('paid_by', lang("paid_by"), 'required');
+        $this->form_validation->set_rules('userfile', lang("attachment"), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+         if (!empty($_POST['val'])) {
+            if ($this->input->post('form_action') == 'delete') {
+                foreach ($_POST['val'] as $id) {
+                    $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+                    $this->data['billers'] = $this->site->getAllCompanies('biller');
+                    $this->data['get_minv'] = $this->sales_model->getmulti_InvoiceByID($id);
+                        $this->data['payment_ref'] = ''; //$this->site->getReference('so');
+                   ///  $this->data['modal_js'] = $this->site->modal_js();
+                    }
+                    $this->session->set_flashdata('message', lang("sales_deleted"));
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+            }
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+        } elseif ($this->input->post('combine_pay')) {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        $this->load->view($this->theme . 'sales/combine_payment', $this->data);
+    }
+    function combine_payment_receivable()
+    {
+        $this->bpas->checkPermissions('payments', true);
+        $this->load->helper('security');
+        $arr = array();
+        if ($this->input->get('data'))
+        {
+            $arr = explode(',', $this->input->get('data'));
+        }        
+        //$this->form_validation->set_rules('reference_no', lang("reference_no"), 'required');
+        $this->form_validation->set_rules('amount-paid', lang("amount"), 'required');
+        if(!$this->Settings->module_account){
+            $this->form_validation->set_rules('paid_by', lang("paid_by"), 'required');
+        } else {
+            $this->form_validation->set_rules('bank_account', lang("bank_account"), 'required');
+        }
+        $this->form_validation->set_rules('userfile', lang("attachment"), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            $photo = '';
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = FALSE;
+                $config['encrypt_name'] = TRUE;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $payment['attachment'] = $photo;
+            }
+            
+            $sale_id_arr = $this->input->post('sale_id');
+            $biller_id = $this->input->post('biller');
+            $amount_paid_arr = $this->input->post('amount_paid_line');
+            $i = 0;
+            
+            // $reference_no = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('pay');
+            $reference_no = $this->site->CheckedPaymentReference($this->input->post('reference_no'), $this->site->getReference('pay'));
+
+            foreach($sale_id_arr as $sale_id){
+                $get_sale = $this->sales_model->getSaleById($sale_id);
+                $payment = array(
+                    'date' => $date,
+                    'sale_id' => $sale_id,
+                    'reference_no' => $reference_no,
+                    'amount' => $amount_paid_arr[$i],
+                    'paid_by' => $this->input->post('paid_by'),
+                    'cheque_no' => $this->input->post('cheque_no'),
+                    'cc_no' => $this->input->post('paid_by') == 'gift_card' ? $this->input->post('gift_card_no') : $this->input->post('pcc_no'),
+                    'cc_holder' => $this->input->post('pcc_holder'),
+                    'cc_month' => $this->input->post('pcc_month'),
+                    'cc_year' => $this->input->post('pcc_year'),
+                    'cc_type' => $this->input->post('pcc_type'),
+                    'note' => $this->input->post('note'),
+                    'created_by' => $this->session->userdata('user_id'),
+                    'type' => 'received',
+                    'biller_id' => $biller_id,
+                    'attachment' =>$photo,
+                    'bank_account' => $this->input->post('bank_account'),
+                    //'add_payment' => '1'
+                );
+
+                if($payment['amount'] > 0 ){                 
+                   $this->sales_model->addCombinePayment($payment);
+
+                   //=====Add accounting=====//
+                   if($this->Settings->module_account){
+                        $amount = $amount_paid_arr[$i];
+                        $accTranPayments = array(
+                            'tran_no'   => $sale_id,
+                            'tran_type' => 'Payment',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $this->accounting_setting->default_receivable,
+                            'amount' => -($amount),
+                            'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                            'description' => $this->input->post('note'),
+                            'biller_id' => $biller_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                        );
+                        
+                        $accTranPayments_debit = array(
+                            'tran_no'   => $sale_id,
+                            'tran_type' => 'Payment',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $this->input->post('bank_account'),
+                            'amount' => $amount,
+                            'narrative' => $this->site->getAccountName($this->input->post('bank_account')),
+                            'description' => $this->input->post('note'),
+                            'biller_id' => $biller_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                        );
+
+                        $this->db->insert('gl_trans',$accTranPayments);
+                        $this->db->insert('gl_trans',$accTranPayments_debit);
+                    }
+                    //=====end accounting=====//
+                }
+                
+                $i++;
+            }
+            $this->session->set_flashdata('message', lang("payment_added"));
+            admin_redirect('account/list_ac_recevable');
+        } else {
+            $setting = $this->site->get_setting();
+            if($this->session->userdata('biller_id')) {
+                $biller_id = $this->session->userdata('biller_id');
+            } else {
+                $biller_id = $setting->default_biller;
+            }
+            
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['billers'] = $this->site->getAllCompanies('biller');
+            $this->data['bankAccounts'] =  $this->site->getAllBankAccounts();
+            $combine_payment = $this->sales_model->getCombinePaymentBySaleId($arr);
+            $this->data['combine_sales'] = $combine_payment;
+            
+            $this->data['payment_ref'] = $this->site->getReference('so');
+            if ($this->Owner || $this->Admin || !$this->session->userdata('biller_id')){
+                $biller_id = $this->site->get_setting()->default_biller;
+                $this->data['reference'] = $this->site->getReference('pp');
+            }else{
+                $biller_id = $this->session->userdata('biller_id');
+                $this->data['reference'] = $this->site->getReference('pp','');
+            }
+            //$this->data['idd'] = $idd;
+
+            $this->data['currency']         = $this->site->getCurrency();
+            $this->data['setting'] = $setting;
+            $this->data['modal_js'] = $this->site->modal_js();
+            $this->data['receivable'] = "receivable"; 
+
+            $this->load->view($this->theme . 'sales/combine_payment', $this->data);
+        }
+    }
+        
+    function combine_payment_customer_old()
+    {
+        $this->bpas->checkPermissions('payments', true);
+        $this->load->helper('security');
+        
+        $arr = array();
+        
+        if ($this->input->get('data'))
+        {
+            $arr = explode(',', $this->input->get('data'));
+        }
+
+        //$this->form_validation->set_rules('reference_no', lang("reference_no"), 'required');
+        $this->form_validation->set_rules('amount-paid', lang("amount"), 'required');
+        $this->form_validation->set_rules('paid_by', lang("paid_by"), 'required');
+        $this->form_validation->set_rules('userfile', lang("attachment"), 'xss_clean');
+        
+        if ($this->form_validation->run() == true) {
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = FALSE;
+                $config['encrypt_name'] = TRUE;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                //$payment['attachment'] = $photo;
+            }
+            $sale_id_arr = $this->input->post('sale_id');
+            $amount_paid_arr = $this->input->post('amount_paid_line');
+            $i = 0;
+            $reference_no = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('so');
+            foreach($sale_id_arr as $sale_id){
+
+                $payment = array(
+                    'date' => $date,
+                    'sale_id' => $sale_id,
+                    'reference_no' => $reference_no,
+                    'amount' => $amount_paid_arr[$i],
+                    'paid_by' => $this->input->post('paid_by'),
+                    'cheque_no' => $this->input->post('cheque_no'),
+                    'cc_no' => $this->input->post('paid_by') == 'gift_card' ? $this->input->post('gift_card_no') : $this->input->post('pcc_no'),
+                    'cc_holder' => $this->input->post('pcc_holder'),
+                    'cc_month' => $this->input->post('pcc_month'),
+                    'cc_year' => $this->input->post('pcc_year'),
+                    'cc_type' => $this->input->post('pcc_type'),
+                    'note' => $this->input->post('note'),
+                    'created_by' => $this->session->userdata('user_id'),
+                    'type' => 'received',
+                    'biller_id' => $this->input->post('biller'),
+                    'attachment' =>$photo
+                );
+                $this->sales_model->addPayment($payment);
+                $i++;
+            }
+            $this->session->set_flashdata('message', lang("payment_added"));
+            redirect($_SERVER["HTTP_REFERER"]);
+
+        }else{
+            $setting = $this->site->get_setting();
+            if($this->session->userdata('biller_id')) {
+                $biller_id = $this->session->userdata('biller_id');
+            }else {
+                $biller_id = $setting->default_biller;
+            }
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['billers'] = $this->site->getAllCompanies('biller');
+            $combine_payment = $this->sales_model->getCombinePaymentById($arr);
+            $this->data['combine_sales'] = $combine_payment;
+            $this->data['payment_ref'] = ''; //$this->site->getReference('so');
+            $this->data['reference']   = $this->site->getReference('so', $biller_id);
+            $this->data['modal_js'] = $this->site->modal_js();
+
+            $this->load->view($this->theme . 'sales/combine_payment_customer', $this->data);
+        }
+    }
+    
+    function getCustomerBalance()
+    {
+        if ($this->input->get('customer')) {
+            $customer = $this->input->get('customer');
+        } else {
+            $customer = NULL;
+        }
+        if ($this->input->get('start_date')) {
+            $start_date = $this->input->get('start_date');
+        } else {
+            $start_date = NULL;
+        }
+
+        if ($this->input->get('end_date')) {
+            $end_date = $this->input->get('end_date');
+        } else {
+            $end_date = NULL;
+        }
+        if ($start_date) {
+            $start_date = $this->bpas->fld($start_date);
+            $end_date = $this->bpas->fld($end_date);
+        }
+        $sp = "(
+        SELECT
+            SUM(COALESCE(bpas_payments.discount, 0)) AS discount,
+            SUM(IF(bpas_payments.paid_by = 'deposit', COALESCE(bpas_payments.amount, 0), 0)) AS deposit,
+            SUM(IF(bpas_payments.paid_by <> 'deposit', COALESCE(bpas_payments.amount, 0), 0)) AS payment,
+            bpas_sales.customer_id AS cust_id
+            FROM
+            bpas_payments
+            INNER JOIN bpas_sales ON bpas_sales.id = bpas_payments.sale_id
+            WHERE
+            bpas_sales.payment_status <> 'paid' AND bpas_sales.sale_status <> 'ordered'
+            GROUP BY
+            bpas_sales.customer_id
+        ) AS bpas_pmt";
+
+        $return = "(
+            SELECT
+            bpas_return_sales.sale_id as sale_id,
+            SUM(COALESCE(bpas_return_sales.grand_total, 0)) AS return_sale
+            FROM
+            bpas_return_sales
+            LEFT JOIN bpas_sales ON bpas_sales.id = bpas_return_sales.sale_id
+            GROUP BY
+            bpas_return_sales.sale_id
+        ) AS bpas_total_return_sale";
+
+        $this->load->library('datatables');
+        $this->datatables->select($this->db->dbprefix('companies') . ".id as idd, companies.company, companies.name, 
+            companies.phone, companies.email, count(" . $this->db->dbprefix('sales') . ".id) as total, 
+            COALESCE(SUM(bpas_sales.grand_total), 0) as total_amount, 
+            SUM(COALESCE(bpas_total_return_sale.return_sale, 0)) AS return_sale,
+            COALESCE(bpas_pmt.payment, 0) AS total_payment,
+            COALESCE(bpas_pmt.deposit, 0) AS total_deposit,
+            COALESCE(bpas_pmt.discount, 0) AS total_discount,
+            (COALESCE(SUM(bpas_sales.grand_total), 0) - SUM(COALESCE(bpas_total_return_sale.return_sale, 0)) - COALESCE(bpas_pmt.payment, 0) - COALESCE(bpas_pmt.deposit, 0) - COALESCE(bpas_pmt.discount, 0)) AS balance
+            ", FALSE)
+        ->from("sales")
+        ->join('companies', 'companies.id = sales.customer_id', 'left')
+        ->join($sp, 'pmt.cust_id = sales.customer_id', 'left')
+        ->join($return, 'total_return_sale.sale_id = sales.id', 'left')
+        ->where(array('companies.group_name' => 'customer', 'sales.payment_status !=' => 'paid'))
+        ->where(array('sales.sale_status !=' => 'ordered'))
+        ->having('total_amount != return_sale')
+        ->group_by('sales.customer_id');
+        if ($customer) {
+            $this->datatables->where('sales.customer_id', $customer);
+        }
+        if($this->session->userdata('biller_id') ) {
+            $this->datatables->where('sales.biller_id', $this->session->userdata('biller_id') );
+        }
+        if ($start_date) {
+            $this->datatables->where($this->db->dbprefix('sales').'.date BETWEEN "' . $start_date . ' 00:00:00" and "' . $end_date . ' 23:59:00"');
+        }
+        $this->datatables->add_column("Actions", "<div class='text-center'><a class=\"tip\" title='" . lang("view_balance") . "' href='" . admin_url('sales/view_customer_balance/$1') . "'><span class='label label-primary'>" . lang("view_balance") . "</span></a></div>", "idd");
+        echo $this->datatables->generate();
+    }
+
+    function view_customer_balance($user_id = NULL) 
+    {
+
+        if (!$user_id && $_GET['d'] == null) {           
+            redirect($_SERVER["HTTP_REFERER"]);
+        }   
+        $this->data['error'] = validation_errors() ? validation_errors() : $this->session->flashdata('error');
+        $this->data['date'] = date('Y-m-d');
+        $this->data['user_id'] = $user_id;
+        $this->data['billers'] = $this->site->getAllCompanies('biller');
+        $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sales')), array('link' => '#', 'page' => lang('customer_balance')));
+        $meta = array('page_title' => lang('customer_balance'), 'bc' => $bc);
+        $this->page_construct('sales/view_customer_balance', $meta, $this->data);
+    }
+    function customer_balance()
+    {
+            //$this->bpas->checkPermissions('customer',NULL,'sale_report');
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $this->data['customers'] = $this->site->getCustomerSale();
+        if ($this->Owner || $this->Admin) {
+            $this->data['warehouses'] = $this->site->getAllWarehouses();
+            $this->data['warehouse_id'] = isset($warehouse_id);
+            $this->data['warehouse'] = isset($warehouse_id) ? $this->site->getWarehouseByID($warehouse_id) : NULL;
+        } else {
+            $this->data['warehouses'] = NULL;
+            $this->data['warehouse_id'] = $this->session->userdata('warehouse_id');
+
+            $this->data['warehouse'] = $this->session->userdata('warehouse_id') ? $this->site->getWarehouseByID($this->session->userdata('warehouse_id')) : NULL;
+        }
+        $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sales')), array('link' => '#', 'page' => lang('customer_balance')));
+        $meta = array('page_title' => lang('customer_balance'), 'bc' => $bc);
+        $this->page_construct('sales/customer_balance', $meta, $this->data);
+    }
+    function customer_balance_actions($user_id)
+    {
+        $this->form_validation->set_rules('form_action', lang("form_action"), 'required');
+
+        if ($this->form_validation->run() == true) {
+            if (!empty($_POST['val'])) {
+                if ($this->input->post('form_action') == 'delete') {
+
+                    $error = false;
+                    foreach ($_POST['val'] as $id) {
+                        if (!$this->accounts_model->deleteChartAccount($id)) {
+                            $error = true;
+                        }
+                    }
+                    if ($error) {
+                        $this->session->set_flashdata('warning', lang('suppliers_x_deleted_have_purchases'));
+                    } else {
+                        $this->session->set_flashdata('message', $this->lang->line("account_deleted_successfully"));
+                    }
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                if ($this->input->post('form_action') == 'combine') {
+                    $html = $this->combine_pdf($_POST['val']);
+                }
+
+                if ($this->input->post('form_action') == 'export_excel' || $this->input->post('form_action') == 'export_pdf') {
+                    $this->load->library('excel');
+                    $this->excel->setActiveSheetIndex(0);
+
+                    $customer = $this->site->getCompanyNameByCustomerID($user_id);
+                    $this->excel->getActiveSheet()->mergeCells('A1:K1');
+                    $this->excel->getActiveSheet()->mergeCells('A2:B2');
+                    $this->excel->getActiveSheet()->setCellValue('A1','Customer Balance');
+                    $this->excel->getActiveSheet()->setCellValue('A2','Customer Name : ');
+                    $this->excel->getActiveSheet()->setCellValue('B2', $customer->company);
+                    $this->excel->getActiveSheet()->mergeCells('H2:J2');
+                    $this->excel->getActiveSheet()->setCellValue('H2','Date: '.date('d-m-Y H:i:s'));
+
+                    $this->excel->getActiveSheet()->SetCellValue('A3', lang('date'));
+                    $this->excel->getActiveSheet()->SetCellValue('B3', lang('reference_no'));
+                    $this->excel->getActiveSheet()->SetCellValue('C3', lang('sale_status'));
+                    $this->excel->getActiveSheet()->SetCellValue('D3', lang('grand_total'));
+                    $this->excel->getActiveSheet()->SetCellValue('E3', lang('return'));
+                    $this->excel->getActiveSheet()->SetCellValue('F3', lang('paid'));
+                    $this->excel->getActiveSheet()->SetCellValue('G3', lang('deposit'));
+                    $this->excel->getActiveSheet()->SetCellValue('H3', lang('discount'));
+                    $this->excel->getActiveSheet()->SetCellValue('I3', lang('balance'));
+                    $this->excel->getActiveSheet()->SetCellValue('J3', lang('payment_status'));
+
+                    $this->excel->getActiveSheet()->getRowDimension(3)->setRowHeight(40);
+                    $this->excel->getActiveSheet()->getStyle('A3:J3')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A1')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(22);
+                    $this->excel->getActiveSheet()->getStyle('A2')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(14);
+                    $this->excel->getActiveSheet()->getStyle('B2')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(14);
+                    $this->excel->getActiveSheet()->getStyle('H2')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(14);
+                    $this->excel->getActiveSheet()->getRowDimension(2)->setRowHeight(30);
+                    $this->excel->getActiveSheet()->getStyle('A2:B2')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('H2:J2')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+                    $this->excel->getActiveSheet()->getStyle('H2:J2')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A3:J3')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(16);
+
+                    $styleArrays = array(
+                        'font'  => array(
+                            'bold'  => true,
+                            'color' => array('rgb' => 'FFFFFF'),
+                            'size'  => 10,
+                            'name'  => 'Verdana'
+                        ),
+                        'fill' => array(
+                            'type' => PHPExcel_Style_Fill::FILL_SOLID,
+                            'color' => array('rgb' => '428BCA')
+                        )
+                    );
+                    $this->excel->getActiveSheet()->getStyle('A3:J3')->applyFromArray($styleArrays);
+
+                    $row = 4;
+                    $total_amount = 0; $total_return_sale = 0; $total_paid = 0; $total_deposit = 0; $total_discount = 0; $total_balance = 0;
+                    foreach ($_POST['val'] as $id) {
+                        $row_data = $this->sales_model->getExportCustomerBalance($id);
+                        $this->excel->getActiveSheet()->SetCellValue('A' . $row, $this->bpas->hrsd($row_data->date));
+                        $this->excel->getActiveSheet()->SetCellValue('B' . $row, $row_data->reference_no);
+                        $this->excel->getActiveSheet()->SetCellValue('C' . $row, ucwords($row_data->sale_status));
+                        $this->excel->getActiveSheet()->SetCellValue('D' . $row, $row_data->amount ? '$ '.$this->bpas->formatMoney($row_data->amount) : '');
+                        $this->excel->getActiveSheet()->SetCellValue('E' . $row, $row_data->return_sale ? '($ '.$this->bpas->formatMoney($row_data->return_sale) .')' : '');
+                        $this->excel->getActiveSheet()->SetCellValue('F' . $row, $row_data->paid ? '$ '.$this->bpas->formatMoney($row_data->paid) : '');
+                        $this->excel->getActiveSheet()->SetCellValue('G' . $row, $row_data->deposit ? '($ '.$this->bpas->formatMoney($row_data->deposit) .')' : '');
+                        $this->excel->getActiveSheet()->SetCellValue('H' . $row, $row_data->discount ? '$ '.$this->bpas->formatMoney($row_data->discount) : '');
+                        $this->excel->getActiveSheet()->SetCellValue('I' . $row, $row_data->balance ? '$ '.$this->bpas->formatMoney($row_data->balance) : '');
+                        $this->excel->getActiveSheet()->SetCellValue('J' . $row, ucwords($row_data->payment_status));
+
+                        $this->excel->getActiveSheet()->getRowDimension($row)->setRowHeight(40);
+                        $this->excel->getActiveSheet()->getStyle('A' . $row . ':J' . $row)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                        $this->excel->getActiveSheet()->getStyle('C' . $row)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                        $this->excel->getActiveSheet()->getStyle('D' . $row . ':I' . $row)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+                        $this->excel->getActiveSheet()->getStyle('J' . $row)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                        $this->excel->getActiveSheet()->getStyle('A' . $row . ':J' . $row)->getFont()
+                        ->setName('Times New Roman')
+                        ->setSize(16);
+
+                        $styleArray = array(
+                            'borders' => array(
+                                'allborders' => array(
+                                    'style' => PHPExcel_Style_Border::BORDER_THIN
+                                )
+                            )
+                        );
+
+                        $this->excel->getActiveSheet()->getStyle('A3:J3')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A' . $row . ':J' . $row)->applyFromArray($styleArray);
+
+                        $total_amount += $row_data->amount;
+                        $total_return_sale += $row_data->return_sale;
+                        $total_paid += $row_data->paid;
+                        $total_deposit += $row_data->deposit;
+                        $total_discount += $row_data->discount;
+                        $total_balance += $row_data->balance;
+                        $row++;
+                    }
+
+                    $this->excel->getActiveSheet()->mergeCells('A' . $row . ':C' . $row);
+                    $this->excel->getActiveSheet()->setCellValue('A' . $row,'Total: ');
+                    $this->excel->getActiveSheet()->getStyle('A' . $row)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+                    $this->excel->getActiveSheet()->getStyle('A' . $row)->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(16);
+
+                    $this->excel->getActiveSheet()->SetCellValue('D' . $row, $total_amount ? '$ '.$this->bpas->formatMoney($total_amount) : '');
+                    $this->excel->getActiveSheet()->SetCellValue('E' . $row, $total_return_sale ? '($ '.$this->bpas->formatMoney($total_return_sale) .')' : '');
+                    $this->excel->getActiveSheet()->SetCellValue('F' . $row, $total_paid ? '$ '.$this->bpas->formatMoney($total_paid) : '');
+                    $this->excel->getActiveSheet()->SetCellValue('G' . $row, $total_deposit ? '($ '.$this->bpas->formatMoney($total_deposit) .')' : '');
+                    $this->excel->getActiveSheet()->SetCellValue('G' . $row, $total_discount ? '$ '.$this->bpas->formatMoney($total_discount) : '');
+                    $this->excel->getActiveSheet()->SetCellValue('I' . $row, $total_balance ? '$ '.$this->bpas->formatMoney($total_balance) : '');
+
+                    $this->excel->getActiveSheet()->getStyle('D' . $row . ':I' . $row)->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(16);
+
+                    $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(22);
+                    $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(25);
+                    $this->excel->getActiveSheet()->getColumnDimension('C')->setWidth(25);
+                    $this->excel->getActiveSheet()->getColumnDimension('D')->setWidth(18);
+                    $this->excel->getActiveSheet()->getColumnDimension('E')->setWidth(18);
+                    $this->excel->getActiveSheet()->getColumnDimension('F')->setWidth(18);
+                    $this->excel->getActiveSheet()->getColumnDimension('G')->setWidth(18);
+                    $this->excel->getActiveSheet()->getColumnDimension('H')->setWidth(18);
+                    $this->excel->getActiveSheet()->getColumnDimension('I')->setWidth(18);
+                    $this->excel->getActiveSheet()->getColumnDimension('J')->setWidth(20);
+                    $this->excel->getDefaultStyle()->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $filename = 'customer_balance_' . date('Y_m_d_H_i_s');
+
+                    if ($this->input->post('form_action') == 'export_pdf') {
+                        $styleArray = array('borders' => array('allborders' => array('style' => PHPExcel_Style_Border::BORDER_THIN)));
+                            //$this->excel->getDefaultStyle()->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getPageSetup()->setOrientation(PHPExcel_Worksheet_PageSetup::ORIENTATION_LANDSCAPE);
+                        require_once(APPPATH . "third_party" . DIRECTORY_SEPARATOR . "MPDF" . DIRECTORY_SEPARATOR . "mpdf.php");
+                        $rendererName = PHPExcel_Settings::PDF_RENDERER_MPDF;
+                        $rendererLibrary = 'MPDF';
+                        $rendererLibraryPath = APPPATH . 'third_party' . DIRECTORY_SEPARATOR . $rendererLibrary;
+                        if (!PHPExcel_Settings::setPdfRenderer($rendererName, $rendererLibraryPath)) {
+                            die('Please set the $rendererName: ' . $rendererName . ' and $rendererLibraryPath: ' . $rendererLibraryPath . ' values' .
+                                PHP_EOL . ' as appropriate for your directory structure');
+                        }
+
+                        header('Content-Type: application/pdf');
+                        header('Content-Disposition: attachment;filename="' . $filename . '.pdf"');
+                        header('Cache-Control: max-age=0');
+                        $styleArray = array(
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+
+                        $header_style = array(
+                            'alignment' => array(
+                                'horizontal' => PHPExcel_Style_Alignment::HORIZONTAL_CENTER
+                            ),
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+
+                        $body_style = array(
+                            'alignment' => array(
+                                'horizontal' => PHPExcel_Style_Alignment::HORIZONTAL_CENTER
+                            )
+                        );
+
+                        $this->excel->getActiveSheet()->getStyle('A1:J1')->applyFromArray($header_style);
+                        $this->excel->getActiveSheet()->getStyle('A2:J2')->applyFromArray($header_style);
+                        $this->excel->getActiveSheet()->getStyle('A3:J3')->applyFromArray($header_style);
+                        $this->excel->getActiveSheet()->getStyle('A3:J3')->getBorders()->getAllBorders()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $rw = 4;
+                        foreach ($_POST['val'] as $id) {
+                            $this->excel->getActiveSheet()->getStyle("A" . $rw . ":J" . $rw)->getBorders()->getAllBorders()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                            $this->excel->getActiveSheet()->getStyle("E" . $rw . ":I" . $rw)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                            $rw++;
+                        }           
+
+                        $this->excel->getActiveSheet()->getStyle("E" . $rw . ":J" . $rw)->getBorders()->getBottom()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle("E" . $rw)->getBorders()->getRight()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle("F" . $rw)->getBorders()->getRight()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle("G" . $rw)->getBorders()->getRight()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle("H" . $rw)->getBorders()->getRight()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle("I" . $rw)->getBorders()->getRight()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle("J" . $rw)->getBorders()->getRight()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+
+                        $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(25);
+                        $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                        $this->excel->getActiveSheet()->getColumnDimension('C')->setWidth(20);
+                        $this->excel->getActiveSheet()->getColumnDimension('D')->setWidth(20);
+                        $this->excel->getActiveSheet()->getColumnDimension('E')->setWidth(20);
+                        $this->excel->getActiveSheet()->getColumnDimension('F')->setWidth(15);
+                        $this->excel->getActiveSheet()->getColumnDimension('G')->setWidth(15);
+                        $this->excel->getActiveSheet()->getColumnDimension('H')->setWidth(15);
+                        $this->excel->getActiveSheet()->getColumnDimension('I')->setWidth(15);
+                        $this->excel->getActiveSheet()->getColumnDimension('J')->setWidth(15);
+                        $this->excel->getActiveSheet()->getColumnDimension('K')->setWidth(20);
+
+                        $objWriter = PHPExcel_IOFactory::createWriter($this->excel, 'PDF');
+                        return $objWriter->save('php://output');
+                    }
+
+                    if ($this->input->post('form_action') == 'export_excel') {
+                        $new_row = $row;
+                        $footer_style = array(
+                            'alignment' => array(
+                                'horizontal' => PHPExcel_Style_Alignment::HORIZONTAL_RIGHT
+                            ),
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+                        $this->excel->getActiveSheet()->getStyle('E'.$new_row.':J'.$new_row)->getBorders()->getTop()->setBorderStyle(PHPExcel_Style_Border:: BORDER_THIN);
+                        $this->excel->getActiveSheet()->getStyle('A'.$new_row.':J'.$new_row)->applyFromArray($footer_style);
+
+                        $this->excel->getActiveSheet()->getPageSetup()->setOrientation(PHPExcel_Worksheet_PageSetup::ORIENTATION_PORTRAIT);
+                        $this->excel->getActiveSheet()->getPageSetup()->setPaperSize(PHPExcel_Worksheet_PageSetup::PAPERSIZE_A4);
+                        $this->excel->getActiveSheet()->getPageSetup()->setFitToPage(true);
+                        $this->excel->getActiveSheet()->getPageSetup()->setFitToWidth(1);
+                        $this->excel->getActiveSheet()->getPageSetup()->setFitToHeight(1);
+
+                            //Margins:
+                        $this->excel->getActiveSheet()->getPageMargins()->setTop(2);
+                        $this->excel->getActiveSheet()->getPageMargins()->setRight(0.25);
+                        $this->excel->getActiveSheet()->getPageMargins()->setLeft(0.35);
+                        $this->excel->getActiveSheet()->getPageMargins()->setBottom(0.25);
+
+                        $styleArray = array(
+                            'borders' => array(
+                                'allborders' => array(
+                                    'style' => PHPExcel_Style_Border::BORDER_THIN
+                                )
+                            )
+                        );
+                            // $this->excel->getDefaultStyle()->applyFromArray($styleArray);
+
+
+                        header('Content-Type: application/vnd.ms-excel');
+                        header('Content-Disposition: attachment;filename="' . $filename . '.xls"');
+                        header('Cache-Control: max-age=0');
+                        $styleArray = array(
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+
+                        $this->excel->getActiveSheet()->getStyle('A1:K1')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A2:K2')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A3:K3')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A1')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                        $this->excel->getActiveSheet()->getStyle('A2:K2')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                        $this->excel->getActiveSheet()->getStyle('A3:K3')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+
+                        $objWriter = PHPExcel_IOFactory::createWriter($this->excel, 'Excel5');
+                        return $objWriter->save('php://output');
+                    }
+
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+
+                if ($this->input->post('form_action') == 'statement_without_logo'){
+
+                    $this->load->library('excel');
+                    $this->excel->setActiveSheetIndex(0);
+                    $this->excel->getActiveSheet()->setTitle(lang('statement_without_logo'));
+                    $this->excel->getActiveSheet()->SetCellValue('A1', lang('date'));
+                    $this->excel->getActiveSheet()->SetCellValue('B1', lang('reference_no'));
+                    $this->excel->getActiveSheet()->SetCellValue('C1', lang('shop'));
+                    $this->excel->getActiveSheet()->SetCellValue('D1', lang('description'));
+                    $this->excel->getActiveSheet()->SetCellValue('E1', lang('grand_total'));
+                    $this->excel->getActiveSheet()->SetCellValue('F1', lang('paid'));
+                    $this->excel->getActiveSheet()->SetCellValue('G1', lang('balance'));
+
+                    $row = 2;
+                    foreach ($_POST['val'] as $id) {
+                        $account = $this->site->getReceivableByID($id);
+                        $account_items = $this->site->getReceivable_DescriptionByID($id);
+
+                        $description = "";
+                        $i = 0;
+                        foreach($account_items as $account_item){
+                            $i+=1; 
+                            $description = $description . $account_item->product_name . "\n". "(" . $account_item->product_noted .")". "\n";
+                        }
+
+                        $this->excel->getActiveSheet()->SetCellValue('A' . $row, $account->date);
+                        $this->excel->getActiveSheet()->SetCellValue('B' . $row, $account->reference_no);
+                        $this->excel->getActiveSheet()->SetCellValue('C' . $row, $account->biller);
+                        $this->excel->getActiveSheet()->SetCellValue('D' . $row, $description);
+                        $this->excel->getActiveSheet()->SetCellValue('E' . $row, $account->grand_total);
+                        $this->excel->getActiveSheet()->SetCellValue('F' . $row, $account->paid);
+                        $this->excel->getActiveSheet()->SetCellValue('G' . $row, $account->balance);
+
+                        $total += $account->grand_total;
+                        $paid += $account->paid;
+                        $balance += ($account->grand_total - $account->paid);
+
+                        $row++;
+                    }
+                    $this->excel->getActiveSheet()->getStyle('D2')->getAlignment()->setWrapText(true);
+                    $this->excel->getActiveSheet()->getStyle("E" . $row . ":G" . $row)->getBorders()
+                    ->getTop()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                    $this->excel->getActiveSheet()->SetCellValue('E' . $row, $this->bpas->formatMoney($total));
+                    $this->excel->getActiveSheet()->SetCellValue('F' . $row, $this->bpas->formatMoney($paid));
+                    $this->excel->getActiveSheet()->SetCellValue('G' . $row, $this->bpas->formatMoney($balance));
+                    $this->excel->getActiveSheet()->getStyle('D'. $row.':F'.$row)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+
+                    $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('C')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('D')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('E')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('F')->setWidth(20);
+
+                    $this->excel->getDefaultStyle()->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $filename = 'statement_without_logo' . date('Y_m_d_H_i_s');
+
+                    if ($this->input->post('form_action') == 'export_pdf') {
+                        $styleArray = array('borders' => array('allborders' => array('style' => PHPExcel_Style_Border::BORDER_THIN)));
+                        $this->excel->getDefaultStyle()->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getPageSetup()->setOrientation(PHPExcel_Worksheet_PageSetup::ORIENTATION_LANDSCAPE);
+                        require_once(APPPATH . "third_party" . DIRECTORY_SEPARATOR . "MPDF" . DIRECTORY_SEPARATOR . "mpdf.php");
+                        $rendererName = PHPExcel_Settings::PDF_RENDERER_MPDF;
+                        $rendererLibrary = 'MPDF';
+                        $rendererLibraryPath = APPPATH . 'third_party' . DIRECTORY_SEPARATOR . $rendererLibrary;
+                        if (!PHPExcel_Settings::setPdfRenderer($rendererName, $rendererLibraryPath)) {
+                            die('Please set the $rendererName: ' . $rendererName . ' and $rendererLibraryPath: ' . $rendererLibraryPath . ' values' .
+                                PHP_EOL . ' as appropriate for your directory structure');
+                        }
+
+                        header('Content-Type: application/pdf');
+                        header('Content-Disposition: attachment;filename="' . $filename . '.pdf"');
+                        header('Cache-Control: max-age=0');
+                        $styleArray = array(
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+                        $this->excel->getActiveSheet()->getStyle("F" . $row . ":H" . $row)->getBorders()
+                        ->getBottom()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle("F" . $row)->getBorders()
+                        ->getRight()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle("G" . $row)->getBorders()
+                        ->getRight()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle('A1:I1')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A2:I2')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A2:I2')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+
+                        $objWriter = PHPExcel_IOFactory::createWriter($this->excel, 'PDF');
+                        return $objWriter->save('php://output');
+                    }
+
+                    if ($this->input->post('form_action') == 'statement_without_logo') {
+                        header('Content-Type: application/vnd.ms-excel');
+                        header('Content-Disposition: attachment;filename="' . $filename . '.xls"');
+                        header('Cache-Control: max-age=0');
+                        $styleArray = array(
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+
+                        $this->excel->getActiveSheet()->getStyle('A1:I1')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A1:I1')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                        $objWriter = PHPExcel_IOFactory::createWriter($this->excel, 'Excel5');
+                        return $objWriter->save('php://output');
+                    }
+
+                    redirect($_SERVER["HTTP_REFERER"]);
+                    
+                }
+
+                if ($this->input->post('form_action') == 'statement_with_logo'){
+
+                    $this->load->library('excel');
+                    $this->excel->setActiveSheetIndex(0);
+                    $this->excel->getActiveSheet()->setTitle(lang('statement_with_logo'));
+                    $this->excel->getActiveSheet()->SetCellValue('A1', lang('date'));
+                    $this->excel->getActiveSheet()->SetCellValue('B1', lang('reference_no'));
+                    $this->excel->getActiveSheet()->SetCellValue('C1', lang('shop'));
+                    $this->excel->getActiveSheet()->SetCellValue('D1', lang('description'));
+                    $this->excel->getActiveSheet()->SetCellValue('E1', lang('grand_total'));
+                    $this->excel->getActiveSheet()->SetCellValue('F1', lang('paid'));
+                    $this->excel->getActiveSheet()->SetCellValue('G1', lang('balance'));
+
+                    $row = 2;
+
+                    foreach ($_POST['val'] as $id) {
+                        $account = $this->site->getReceivableByID($id);
+                        $account_items = $this->site->getReceivable_DescriptionByID($id);
+
+                        $description = "";
+                        $i = 0;
+                        foreach($account_items as $account_item){
+                            $i+=1; 
+                            $description = $description . $account_item->product_name . "\n". "(" . $account_item->product_noted .")". "\n";
+                        }
+
+                        $this->excel->getActiveSheet()->SetCellValue('A' . $row, $account->date);
+                        $this->excel->getActiveSheet()->SetCellValue('B' . $row, $account->reference_no);
+                        $this->excel->getActiveSheet()->SetCellValue('C' . $row, $account->biller);
+                        $this->excel->getActiveSheet()->SetCellValue('D' . $row, $description);
+                        $this->excel->getActiveSheet()->SetCellValue('E' . $row, $account->grand_total);
+                        $this->excel->getActiveSheet()->SetCellValue('F' . $row, $account->paid);
+                        $this->excel->getActiveSheet()->SetCellValue('G' . $row, $account->balance);
+
+                        $total += $account->grand_total;
+                        $paid += $account->paid;
+                        $balance += ($account->grand_total - $account->paid);
+
+                        $row++;
+                    }
+                    $this->excel->getActiveSheet()->getStyle('D2')->getAlignment()->setWrapText(true);
+                    $this->excel->getActiveSheet()->getStyle("E" . $row . ":G" . $row)->getBorders()
+                    ->getTop()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                    $this->excel->getActiveSheet()->SetCellValue('E' . $row, $this->bpas->formatMoney($total));
+                    $this->excel->getActiveSheet()->SetCellValue('F' . $row, $this->bpas->formatMoney($paid));
+                    $this->excel->getActiveSheet()->SetCellValue('G' . $row, $this->bpas->formatMoney($balance));
+                    $this->excel->getActiveSheet()->getStyle('D'. $row.':F'.$row)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+
+                    $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('C')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('D')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('E')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('F')->setWidth(20);
+
+                    $this->excel->getDefaultStyle()->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $filename = 'statement_with_logo' . date('Y_m_d_H_i_s');
+                    if ($this->input->post('form_action') == 'export_pdf') {
+                        $styleArray = array('borders' => array('allborders' => array('style' => PHPExcel_Style_Border::BORDER_THIN)));
+                        $this->excel->getDefaultStyle()->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getPageSetup()->setOrientation(PHPExcel_Worksheet_PageSetup::ORIENTATION_LANDSCAPE);
+                        require_once(APPPATH . "third_party" . DIRECTORY_SEPARATOR . "MPDF" . DIRECTORY_SEPARATOR . "mpdf.php");
+                        $rendererName = PHPExcel_Settings::PDF_RENDERER_MPDF;
+                        $rendererLibrary = 'MPDF';
+                        $rendererLibraryPath = APPPATH . 'third_party' . DIRECTORY_SEPARATOR . $rendererLibrary;
+                        if (!PHPExcel_Settings::setPdfRenderer($rendererName, $rendererLibraryPath)) {
+                            die('Please set the $rendererName: ' . $rendererName . ' and $rendererLibraryPath: ' . $rendererLibraryPath . ' values' .
+                                PHP_EOL . ' as appropriate for your directory structure');
+                        }
+
+                        header('Content-Type: application/pdf');
+                        header('Content-Disposition: attachment;filename="' . $filename . '.pdf"');
+                        header('Cache-Control: max-age=0');
+                        $styleArray = array(
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+                        $this->excel->getActiveSheet()->getStyle("F" . $row . ":H" . $row)->getBorders()
+                        ->getBottom()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle("F" . $row)->getBorders()
+                        ->getRight()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle("G" . $row)->getBorders()
+                        ->getRight()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $this->excel->getActiveSheet()->getStyle('A1:I1')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A1:I1')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+
+                        $objWriter = PHPExcel_IOFactory::createWriter($this->excel, 'PDF');
+                        return $objWriter->save('php://output');
+                    }
+                    if ($this->input->post('form_action') == 'statement_with_logo') {
+                        header('Content-Type: application/vnd.ms-excel');
+                        header('Content-Disposition: attachment;filename="' . $filename . '.xls"');
+                        header('Cache-Control: max-age=0');
+                        $styleArray = array(
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+                        $this->excel->getActiveSheet()->getStyle('A1:I1')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A1:I1')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                        $objWriter = PHPExcel_IOFactory::createWriter($this->excel, 'Excel5');
+                        return $objWriter->save('php://output');
+                    }
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                if ($this->input->post('form_action') == 'PNP_statement' || $this->input->post('form_action') == 'export_pdf') {
+                    $this->load->library('excel');
+                    $this->excel->setActiveSheetIndex(0);
+                    $customer   = $this->site->getCompanyNameByCustomerID($user_id);
+                    $biller_id  = $this->site->get_setting()->default_biller;
+                    $billers    = $this->site->getCompanyByID($biller_id);
+                    $user_id    = $this->site->getUser($id);                    
+                    $this->excel->getActiveSheet()->mergeCells('A1:D1');
+                    $this->excel->getActiveSheet()->mergeCells('A2:D2');
+                    $this->excel->getActiveSheet()->mergeCells('B3:D3');
+                    $this->excel->getActiveSheet()->mergeCells('A4:B4');
+                    $this->excel->getActiveSheet()->mergeCells('A5:C5');
+                    $this->excel->getActiveSheet()->mergeCells('B7:C7');
+                    $this->excel->getActiveSheet()->setCellValue('A1','PNP ASIA Cooperation Co.,Ltd.');
+                    $this->excel->getActiveSheet()->setCellValue('E1','STATEMENT');
+                    $this->excel->getActiveSheet()->setCellValue('A2',$billers->address);
+                    $this->excel->getActiveSheet()->setCellValue('A3','Tel / Fax : ');
+                    $this->excel->getActiveSheet()->setCellValue('B3',$billers->phone);
+                    $this->excel->getActiveSheet()->setCellValue('A4','SOLD TO:');
+                    $this->excel->getActiveSheet()->setCellValue('A5',$customer->company);
+                    $this->excel->getActiveSheet()->setCellValue('A7','Contact :');
+                    $this->excel->getActiveSheet()->setCellValue('B7',$customer->phone);
+                    $this->excel->getActiveSheet()->setCellValue('D4','INVOICE NUMBER  :');
+                    $this->excel->getActiveSheet()->setCellValue('D5','INVOICE DATE   :');
+                    $this->excel->getActiveSheet()->setCellValue('E5',date($format = "d/m/Y"));
+                    $this->excel->getActiveSheet()->setCellValue('D6','OUR ORDER NO :');
+                    $this->excel->getActiveSheet()->setCellValue('D7','TERMS  :');
+                    $this->excel->getActiveSheet()->setCellValue('D8','SALES REP :');
+                    $this->excel->getActiveSheet()->setCellValue('E8',$user_id->username);
+                    $this->excel->getActiveSheet()->SetCellValue('A9', lang('No'));
+                    $this->excel->getActiveSheet()->SetCellValue('B9', lang('date'));
+                    $this->excel->getActiveSheet()->SetCellValue('C9', lang('Invoice_number'));
+                    $this->excel->getActiveSheet()->SetCellValue('D9', lang('Amount'));
+                    $this->excel->getActiveSheet()->SetCellValue('E9', lang('Remark'));
+                    $this->excel->getActiveSheet()->getRowDimension(3)->setRowHeight(30);
+                    $this->excel->getActiveSheet()->getRowDimension(4)->setRowHeight(25);
+                    $this->excel->getActiveSheet()->getRowDimension(5)->setRowHeight(25);
+                    $this->excel->getActiveSheet()->getRowDimension(9)->setRowHeight(40);
+                    $this->excel->getActiveSheet()->getStyle('A9:E9')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A9:E9')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A1')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(22);
+                    $this->excel->getActiveSheet()->getStyle('E1')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(15);
+
+                    $this->excel->getActiveSheet()->getStyle('A3')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(12);
+                    $this->excel->getActiveSheet()->getStyle('A5')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(15);
+                    $this->excel->getActiveSheet()->getStyle('H2')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(14);
+                    $this->excel->getActiveSheet()->getRowDimension(2)->setRowHeight(30);
+
+                    $this->excel->getActiveSheet()->getStyle('A1:D1')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A9:E9')->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(16);
+                    $styleArrays = array(
+                        'font'  => array(
+                            'bold'  => true,
+                            'color' => array('rgb' => 'FFFFFF'),
+                            'size'  => 10,
+                            'name'  => 'Verdana'
+                        ),
+                        'fill' => array(
+                            'type' => PHPExcel_Style_Fill::FILL_SOLID,
+                            'color' => array('rgb' => '428BCA')
+                        )
+                    );
+                    $this->excel->getActiveSheet()->getStyle('A9:E9')->applyFromArray($styleArrays);
+                    $row = 10;
+                    $i=1;
+                    foreach ($_POST['val'] as $id) {
+                        $row_data = $this->sales_model->getExportCustomerBalance($id);
+                        $tax="";
+                        if($row_data->product_tax>0){
+                            $tax="VAT";
+                        }else{
+                            $tax="NO_VAT";
+                        }
+                        $this->excel->getActiveSheet()->SetCellValue('A' . $row,$i);
+                        $this->excel->getActiveSheet()->SetCellValue('B' . $row, $this->bpas->hrsd($row_data->date));
+                        $this->excel->getActiveSheet()->SetCellValue('C' . $row, $row_data->reference_no);
+                        $this->excel->getActiveSheet()->SetCellValue('D' . $row, $row_data->balance ? '$ '.$this->bpas->formatMoney($row_data->balance) : '');
+                        $this->excel->getActiveSheet()->SetCellValue('E' . $row,$tax);
+                        $total_amount += $row_data->balance;
+                        $this->excel->getActiveSheet()->getRowDimension($row)->setRowHeight(30);
+                        $this->excel->getActiveSheet()->getStyle('A'. $row .':E' . $row)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                        $this->excel->getActiveSheet()->getStyle('A'. $row .':E' . $row)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                        $styleArray = array(
+                            'borders' => array(
+                                'allborders' => array(
+                                    'style' => PHPExcel_Style_Border::BORDER_THIN
+                                )
+                            )
+                        );
+                        $this->excel->getActiveSheet()->getStyle('A10:E10')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A' . $row . ':E' . $row)->applyFromArray($styleArray);
+                        $row++;
+                        $i++;
+                    }
+                    $newrow=$row;
+                    if($i<15){
+                        $k=21 - $i;
+                        for($row=$newrow;$row<=$k;$row++){
+                            $this->excel->getActiveSheet()->SetCellValue('A' .$row,$i);
+                            $this->excel->getActiveSheet()->SetCellValue('B' . $row);
+                            $this->excel->getActiveSheet()->SetCellValue('C' . $row);
+                            $this->excel->getActiveSheet()->SetCellValue('D' . $row);
+                            $this->excel->getActiveSheet()->SetCellValue('E' . $row);
+                            $styleArray = array(
+                                'borders' => array(
+                                    'allborders' => array(
+                                        'style' => PHPExcel_Style_Border::BORDER_THIN
+                                    )
+                                )
+                            );
+                            $this->excel->getActiveSheet()->getStyle('A' . $row . ':E' . $row)->applyFromArray($styleArray);
+                            $this->excel->getActiveSheet()->getRowDimension($row)->setRowHeight(30);
+                            $this->excel->getActiveSheet()->getStyle('A'. $row .':E' . $row)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                            $this->excel->getActiveSheet()->getStyle('A'. $row .':E' . $row)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                            $i++;
+                        }
+                    }
+
+                    $erow=$row+1;
+                    $trow=$row+2;
+                    $row1=$row+6;
+                    $row2=$row+10;
+                    $row3=$row+11;
+                    $styleArray = array(
+                        'borders' => array(
+                            'allborders' => array(
+                                'style' => PHPExcel_Style_Border::BORDER_THIN
+                            )
+                        )
+                    );
+                    $this->excel->getActiveSheet()->mergeCells('A' . $row . ':C' . $row);
+                    $this->excel->getActiveSheet()->setCellValue('A' . $row,'Total: ');
+                    $this->excel->getActiveSheet()->getStyle('A' . $row)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A' . $row . ':E' . $row)->applyFromArray($styleArray);
+                    $this->excel->getActiveSheet()->getStyle('A'. $row .':E' . $row)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getRowDimension($row)->setRowHeight(25);
+                    $this->excel->getActiveSheet()->getStyle('A' . $row)->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(16);
+                    $this->excel->getActiveSheet()->SetCellValue('D' . $row, $total_amount ? '$ '.$this->bpas->formatMoney($total_amount) : '');
+
+                    $this->excel->getActiveSheet()->mergeCells('A' . $erow . ':B' . $erow);
+                    $this->excel->getActiveSheet()->setCellValue('A' . $erow,'');
+                    $this->excel->getActiveSheet()->getStyle('A' . $erow . ':D' . $erow)->applyFromArray($styleArray);
+                    $this->excel->getActiveSheet()->getStyle('A'. $erow .':D' . $erow)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getRowDimension($erow)->setRowHeight(25);
+                    $this->excel->getActiveSheet()->SetCellValue('D'.$erow,'');
+
+                    $this->excel->getActiveSheet()->mergeCells('A' . $trow . ':C' . $trow);
+                    $this->excel->getActiveSheet()->setCellValue('A' . $trow,'Balance: ');
+                    $this->excel->getActiveSheet()->getStyle('A' . $trow)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+                    $this->excel->getActiveSheet()->getStyle('A' . $trow . ':D' . $trow)->applyFromArray($styleArray);
+                    $this->excel->getActiveSheet()->getStyle('A'. $trow .':D' . $trow)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getRowDimension($trow)->setRowHeight(25);
+                    $this->excel->getActiveSheet()->getStyle('A' . $trow)->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(16);
+                    $this->excel->getActiveSheet()->getStyle('D'. $trow)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+                    $this->excel->getActiveSheet()->SetCellValue('D' . $trow, $total_amount ? '$ '.$this->bpas->formatMoney($total_amount) : '');
+
+                    $this->excel->getActiveSheet()->getStyle('A' . $row1 . ':C' . $row1)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->mergeCells('A' . $row1 . ':C' . $row1);
+                    $this->excel->getActiveSheet()->setCellValue('A' . $row1,'PNP ASIA Cooperation Co.,Ltd.');
+
+                    $this->excel->getActiveSheet()->getStyle('E'. $row1)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('E' . $row1 . ':C' . $row1)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->setCellValue('E' . $row1,'Checked & Received by');
+
+                    $this->excel->getActiveSheet()->getStyle('A' . $row2 . ':B' . $row2)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->mergeCells('A' . $row2 . ':B' . $row2);
+                    $this->excel->getActiveSheet()->setCellValue('A' . $row2,'MR. PITIPORN FAKSAWAT');
+                    $this->excel->getActiveSheet()->getStyle('A' . $row2)->getFont()
+                    ->setName('Times New Roman')
+                    ->setSize(14);
+
+                    $this->excel->getActiveSheet()->getStyle('A' . $row3 . ':B' . $row3)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A' . $row3 . ':B' . $row3)->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->mergeCells('A' . $row3 . ':B' . $row3);
+                    $this->excel->getActiveSheet()->setCellValue('A' . $row3,'Managing Director');
+
+                    $this->excel->getActiveSheet()->getStyle('E' . $row3)->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('E' . $row3 )->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->setCellValue('E' . $row3,$customer->company);
+
+                    $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(10);
+                    $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('C')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('D')->setWidth(25);
+                    $this->excel->getActiveSheet()->getColumnDimension('E')->setWidth(25);
+
+                    $this->excel->getActiveSheet()->getStyle('E1')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('E1')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A2:D2')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A3:D3')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A4:C4')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A5:C5')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('A7:C7')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('D4:E4')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('D5:E5')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('D6:E6')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('D7:E7')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $this->excel->getActiveSheet()->getStyle('D8:E8')->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+
+                    $this->excel->getActiveSheet()->getStyle('D4')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+                    $this->excel->getActiveSheet()->getStyle('D5')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+                    $this->excel->getActiveSheet()->getStyle('D6')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+                    $this->excel->getActiveSheet()->getStyle('D7')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+                    $this->excel->getActiveSheet()->getStyle('D8')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_RIGHT);
+
+                    $filename = 'customer_balance_' . date('Y_m_d_H_i_s');
+
+                    if ($this->input->post('form_action') == 'export_pdf') {
+                        $styleArray = array('borders' => array('allborders' => array('style' => PHPExcel_Style_Border::BORDER_THIN)));
+                            //$this->excel->getDefaultStyle()->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getPageSetup()->setOrientation(PHPExcel_Worksheet_PageSetup::ORIENTATION_LANDSCAPE);
+                        require_once(APPPATH . "third_party" . DIRECTORY_SEPARATOR . "MPDF" . DIRECTORY_SEPARATOR . "mpdf.php");
+                        $rendererName = PHPExcel_Settings::PDF_RENDERER_MPDF;
+                        $rendererLibrary = 'MPDF';
+                        $rendererLibraryPath = APPPATH . 'third_party' . DIRECTORY_SEPARATOR . $rendererLibrary;
+                        if (!PHPExcel_Settings::setPdfRenderer($rendererName, $rendererLibraryPath)) {
+                            die('Please set the $rendererName: ' . $rendererName . ' and $rendererLibraryPath: ' . $rendererLibraryPath . ' values' .
+                                PHP_EOL . ' as appropriate for your directory structure');
+                        }
+
+                        header('Content-Type: application/pdf');
+                        header('Content-Disposition: attachment;filename="' . $filename . '.pdf"');
+                        header('Cache-Control: max-age=0');
+                        $styleArray = array(
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+
+                        $header_style = array(
+                            'alignment' => array(
+                                'horizontal' => PHPExcel_Style_Alignment::HORIZONTAL_CENTER
+                            ),
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+
+                        $body_style = array(
+                            'alignment' => array(
+                                'horizontal' => PHPExcel_Style_Alignment::HORIZONTAL_CENTER
+                            )
+                        );
+
+                        $this->excel->getActiveSheet()->getStyle('A1:E1')->applyFromArray($header_style);
+                        $this->excel->getActiveSheet()->getStyle('A4:E4')->applyFromArray($header_style);
+                        $this->excel->getActiveSheet()->getStyle('A9:E9')->applyFromArray($header_style);
+                        $this->excel->getActiveSheet()->getStyle('A9:E9')->getBorders()->getAllBorders()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+                        $rw = 10;
+                        foreach ($_POST['val'] as $id) {
+                            $this->excel->getActiveSheet()->getStyle("A" . $rw . ":E" . $rw)->getBorders()->getAllBorders()->setBorderStyle(PHPExcel_Style_Border::BORDER_MEDIUM);
+
+                            $rw++;
+                        }   
+
+                        $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(25);
+                        $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                        $this->excel->getActiveSheet()->getColumnDimension('C')->setWidth(20);
+                        $this->excel->getActiveSheet()->getColumnDimension('D')->setWidth(20);
+                        $this->excel->getActiveSheet()->getColumnDimension('E')->setWidth(20);
+
+
+                        $objWriter = PHPExcel_IOFactory::createWriter($this->excel, 'PDF');
+                        return $objWriter->save('php://output');
+                    }
+
+                    if ($this->input->post('form_action') == 'PNP_statement') {
+                        $new_row = $row;
+                        $footer_style = array(
+                            'alignment' => array(
+                                'horizontal' => PHPExcel_Style_Alignment::HORIZONTAL_RIGHT
+                            ),
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+
+                        $this->excel->getActiveSheet()->getStyle('A'.$new_row.':E'.$new_row)->applyFromArray($footer_style);
+
+                        $this->excel->getActiveSheet()->getPageSetup()->setOrientation(PHPExcel_Worksheet_PageSetup::ORIENTATION_PORTRAIT);
+                        $this->excel->getActiveSheet()->getPageSetup()->setPaperSize(PHPExcel_Worksheet_PageSetup::PAPERSIZE_A4);
+                        $this->excel->getActiveSheet()->getPageSetup()->setFitToPage(true);
+                        $this->excel->getActiveSheet()->getPageSetup()->setFitToWidth(1);
+                        $this->excel->getActiveSheet()->getPageSetup()->setFitToHeight(1);
+
+                            //Margins:
+                        $this->excel->getActiveSheet()->getPageMargins()->setTop(2);
+                        $this->excel->getActiveSheet()->getPageMargins()->setRight(0.25);
+                        $this->excel->getActiveSheet()->getPageMargins()->setLeft(0.35);
+                        $this->excel->getActiveSheet()->getPageMargins()->setBottom(0.25);
+
+                        $styleArray = array(
+                            'borders' => array(
+                                'allborders' => array(
+                                    'style' => PHPExcel_Style_Border::BORDER_THIN
+                                )
+                            )
+                        );
+                            // $this->excel->getDefaultStyle()->applyFromArray($styleArray);
+
+
+                        header('Content-Type: application/vnd.ms-excel');
+                        header('Content-Disposition: attachment;filename="' . $filename . '.xls"');
+                        header('Cache-Control: max-age=0');
+                        $styleArray = array(
+                            'font'  => array(
+                                'bold'  => true
+                            )
+                        );
+
+                        $this->excel->getActiveSheet()->getStyle('A1:E1')->applyFromArray($styleArray);
+                        $this->excel->getActiveSheet()->getStyle('A1')->getAlignment()->setHorizontal(PHPExcel_Style_Alignment::HORIZONTAL_CENTER);
+
+
+
+
+                        $objWriter = PHPExcel_IOFactory::createWriter($this->excel, 'Excel5');
+                        return $objWriter->save('php://output');
+                    }
+
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+
+            } else {
+                $this->session->set_flashdata('error', $this->lang->line("no_supplier_selected"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+        } else {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+    }
+
+    function getSales_DuePayment($warehouse_id = NULL, $dt = NULL)
+    {
+        $this->bpas->checkPermissions('index');
+
+        if ($this->input->get('customer')) {
+            $customer = $this->input->get('customer');
+        } else {
+            $customer = NULL;
+        }
+        if ($this->input->get('reference_no')) {
+            $reference_no = $this->input->get('reference_no');
+        } else {
+            $reference_no = NULL;
+        }
+        if ($this->input->get('biller')) {
+            $biller = $this->input->get('biller');
+        } else {
+            $biller = NULL;
+        }
+        if ($this->input->get('start_date')) {
+            $start_date = $this->input->get('start_date');
+        } else {
+            $start_date = NULL;
+        }
+
+        if ($this->input->get('end_date')) {
+            $end_date = $this->input->get('end_date');
+        } else {
+            $end_date = NULL;
+        }
+        if ($start_date) {
+            $start_date = $this->bpas->fld($start_date);
+            $end_date = $this->bpas->fld($end_date);
+        }
+        if ($this->input->get('search_id')) {
+            $search_id = $this->input->get('search_id');
+        } else {
+            $search_id = NULL;
+        }
+        if ((! $this->Owner || ! $this->Admin) && ! $warehouse_id) {
+            $user = $this->site->getUser();
+            $warehouse_id = $user->warehouse_id;
+        }
+
+        $detail_link = anchor('sales/view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('sale_details'));
+        $payments_link = anchor('sales/payments/$1', '<i class="fa fa-money"></i> ' . lang('view_payments'), 'data-toggle="modal" data-target="#myModal"');
+        $add_payment_link = anchor('sales/add_payment/$1', '<i class="fa fa-money"></i> ' . lang('add_payment'), 'data-toggle="modal" data-target="#myModal"');
+        $add_delivery_link = anchor('sales/add_delivery/$1', '<i class="fa fa-truck"></i> ' . lang('add_delivery'), 'data-toggle="modal" data-target="#myModal"');
+        $email_link = anchor('sales/email/$1', '<i class="fa fa-envelope"></i> ' . lang('email_sale'), 'data-toggle="modal" data-target="#myModal"');
+        $edit_link = anchor('sales/edit/$1', '<i class="fa fa-edit"></i> ' . lang('edit_sale'), 'class="sledit"');
+        $pdf_link = anchor('sales/pdf/$1', '<i class="fa fa-file-pdf-o"></i> ' . lang('download_pdf'));
+        $delete_link = "<a href='#' class='po' title='<b>" . lang("delete_sale") . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_sale') . "</a>";
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+        <ul class="dropdown-menu pull-right" role="menu">
+        <li>' . $detail_link . '</li>'
+
+        .(($this->Owner || $this->Admin) ? '<li>'.$payments_link.'</li>' : ($this->GP['sales-payments'] ? '<li>'.$payments_link.'</li>' : '')).
+        (($this->Owner || $this->Admin) ? '<li>'.$add_payment_link.'</li>' : ($this->GP['sales-payments'] ? '<li>'.$add_payment_link.'</li>' : '')).
+        (($this->Owner || $this->Admin) ? '<li>'.$pdf_link.'</li>' : ($this->GP['sales-export'] ? '<li>'.$pdf_link.'</li>' : '')).
+        (($this->Owner || $this->Admin) ? '<li>'.$email_link.'</li>' : ($this->GP['sales-email'] ? '<li>'.$email_link.'</li>' : '')).
+
+        '</ul></div></div>';
+
+        $warehouses = explode(',', $warehouse_id);
+
+        $this->load->library('datatables');
+        if ($warehouse_id) {
+            $this->datatables
+            ->select("sales.id, sales.date, sales.due_date, sales.reference_no, sales.biller, companies.company as customer, 
+                sales.sale_status, COALESCE(bpas_sales.grand_total, 0) as grand_total,  
+                COALESCE((SELECT SUM(bpas_return_sales.grand_total) FROM bpas_return_sales WHERE bpas_return_sales.sale_id = bpas_sales.id), 0) as return_sale, 
+                COALESCE( (SELECT SUM(IF((bpas_payments.paid_by != 'deposit' AND ISNULL(bpas_payments.return_id)), bpas_payments.amount, IF(NOT ISNULL(bpas_payments.return_id), ((-1)*bpas_payments.amount), 0))) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id),0) as paid, 
+                COALESCE((SELECT SUM(IF(bpas_payments.paid_by = 'deposit', bpas_payments.amount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) as deposit, 
+                COALESCE((SELECT SUM(COALESCE(bpas_payments.discount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) as discount, 
+                (COALESCE(bpas_sales.grand_total, 0) - COALESCE((SELECT SUM(bpas_return_sales.grand_total) FROM bpas_return_sales WHERE bpas_return_sales.sale_id = bpas_sales.id), 0) - COALESCE( (SELECT SUM(IF((bpas_payments.paid_by != 'deposit' AND ISNULL(bpas_payments.return_id)), bpas_payments.amount, IF(NOT ISNULL(bpas_payments.return_id), ((-1)*bpas_payments.amount), 0))) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id),0) - COALESCE((SELECT SUM(IF(bpas_payments.paid_by = 'deposit', bpas_payments.amount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) - COALESCE((SELECT SUM(COALESCE(bpas_payments.discount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0)) as balance, 
+                payment_status")
+            ->from('sales')
+            ->join('companies', 'sales.customer_id = companies.id', 'left')
+            ->join('payments', 'payments.sale_id = sales.id', 'left')
+            ->where('payment_status !=', 'paid')
+            ->where(array('sale_status !=' => 'ordered'))
+            ->having('grand_total != return_sale')
+            ->group_by('sales.id');
+            if (count($warehouses > 1)) {
+                $this->db->where_in('sales.warehouse_id', $warehouses);
+            } else {
+                $this->db->where('sales.warehouse_id', $warehouse_id);
+            }
+
+        } else {
+            $this->datatables
+            ->select("sales.id, sales.date, sales.due_date, sales.reference_no, sales.biller, companies.company as customer, 
+                sales.sale_status, COALESCE(bpas_sales.grand_total, 0) as grand_total,  
+                COALESCE((SELECT SUM(bpas_return_sales.grand_total) FROM bpas_return_sales WHERE bpas_return_sales.sale_id = bpas_sales.id), 0) as return_sale, 
+                COALESCE( (SELECT SUM(IF((bpas_payments.paid_by != 'deposit' AND ISNULL(bpas_payments.return_id)), bpas_payments.amount, IF(NOT ISNULL(bpas_payments.return_id), ((-1)*bpas_payments.amount), 0))) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id),0) as paid, 
+                COALESCE((SELECT SUM(IF(bpas_payments.paid_by = 'deposit', bpas_payments.amount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) as deposit, 
+                COALESCE((SELECT SUM(COALESCE(bpas_payments.discount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) as discount, 
+                (COALESCE(bpas_sales.grand_total, 0) - COALESCE((SELECT SUM(bpas_return_sales.grand_total) FROM bpas_return_sales WHERE bpas_return_sales.sale_id = bpas_sales.id), 0) - COALESCE((SELECT SUM(IF((bpas_payments.paid_by != 'deposit' AND ISNULL(bpas_payments.return_id)), bpas_payments.amount, IF(NOT ISNULL(bpas_payments.return_id), ((-1)*bpas_payments.amount), 0))) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id),0) - COALESCE((SELECT SUM(IF(bpas_payments.paid_by = 'deposit', bpas_payments.amount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0) - COALESCE((SELECT SUM(COALESCE(bpas_payments.discount, 0)) FROM bpas_payments WHERE bpas_payments.sale_id = bpas_sales.id), 0)) as balance, 
+                payment_status")
+            ->from('sales')
+            ->join('companies', 'sales.customer_id = companies.id', 'left')
+            ->join('payments', 'payments.sale_id = sales.id', 'left')
+            ->where(array('payment_status !=' => 'paid'))
+            ->where(array('sale_status !=' => 'ordered'))
+            ->having('grand_total != return_sale')
+            ->group_by('sales.id');
+            if(isset($_REQUEST['d'])){
+                $date = $_GET['d'];
+                $date1 = str_replace("/", "-", $date);
+                $date =  date('Y-m-d', strtotime($date1));
+
+                $this->datatables
+                ->where("date >=", $date)
+                ->where('DATE_SUB(date, INTERVAL 1 DAY) <= CURDATE()')
+                ->where('sales.payment_term <>', 0);
+            }
+        }        
+        if ($this->permission['sales-index'] = ''){
+            if (!$this->Customer && !$this->Supplier && !$this->Owner && !$this->Admin) {
+                $this->datatables->where('created_by', $this->session->userdata('user_id'));
+            } elseif ($this->Customer) {
+                $this->datatables->where('customer_id', $this->session->userdata('user_id'));
+            }
+        }
+
+        if ($customer) {
+            $this->datatables->where('sales.customer_id', $customer);
+        }
+
+        if ($reference_no) {
+            $this->datatables->where('sales.reference_no', $reference_no);
+        }
+
+        if($this->session->userdata('biller_id') ) {
+            $this->datatables->where('sales.biller_id', $this->session->userdata('biller_id') );
+        }
+
+        if ($biller) {
+
+            $this->datatables->where('sales.biller_id', $biller);
+        }
+        if ($start_date) {
+            $this->datatables->where($this->db->dbprefix('sales').'.date BETWEEN "' . $start_date . '" and "' . $end_date . '"');
+        }
+
+        if($dt == 30){
+            $this->datatables->where('date('. $this->db->dbprefix('sales') .'.date) > CURDATE() AND date('. $this->db->dbprefix('sales') .'.date) <= DATE_ADD(now(), INTERVAL + 30 DAY)');
+        }elseif($dt == 60){
+            $this->datatables->where('date('. $this->db->dbprefix('sales') .'.date) > DATE_ADD(now(), INTERVAL + 30 DAY) AND date('. $this->db->dbprefix('sales') .'.date) <= DATE_ADD(now(), INTERVAL + 60 DAY)');
+        }elseif($dt == 90){
+            $this->datatables->where('date('. $this->db->dbprefix('sales') .'.date) > DATE_ADD(now(), INTERVAL + 60 DAY) AND date('. $this->db->dbprefix('sales') .'.date) <= DATE_ADD(now(), INTERVAL + 90 DAY)');
+        }elseif($dt == 91){
+            $this->datatables->where('date('. $this->db->dbprefix('sales') .'.date) >= DATE_ADD(now(), INTERVAL + 90 DAY)');
+        }
+
+        $this->datatables->add_column("Actions", $action, "sales.id");
+        echo $this->datatables->generate();
+    }
+    function customer_opening_balance(){
+        $this->bpas->checkPermissions('opening_ar', null, 'sales');
+        $this->load->helper('security');
+        $this->load->library('bpas');
+
+        $this->form_validation->set_rules('userfile', lang("upload_file"), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+
+            if (isset($_FILES["userfile"]))
+            {
+                $this->load->library('upload');
+                $config['upload_path'] = 'assets/uploads/csv/';
+                $config['allowed_types'] = 'csv';
+                $config['max_size'] = '2000';
+                $config['overwrite'] = TRUE;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('userfile'))
+                {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    admin_redirect("sales/customer_opening_balance");
+                }
+                $csv = $this->upload->file_name;
+                $arrResult = array();
+                $handle = fopen("assets/uploads/csv/" . $csv, "r");
+                if ($handle) {
+                    while (($row = fgetcsv($handle,",")) !== FALSE) {
+                        $arrResult[] = $row;
+                    }
+                    fclose($handle);
+                }
+                $titles = array_shift($arrResult);
+                $keys = array('customer_no','customer_name', 'invoice_reference', 'opening_date','invoice_date', 'shop_id','term','sale_id', 'balance', 'deposit');
+                $final = array();
+                foreach ($arrResult as $key => $value) {
+                    $final[] = array_combine($keys, $value);
+                }
+                $data_deposit = array();
+                $data_insert = array();
+                $data_payment = array();
+                $deposit_gl = array();
+                $balance_gl = array();
+
+                $customer_num = 0;
+                $payments = 0;
+
+                foreach ($final as $key => $value)
+                {
+                   $date = strtr($value['opening_date'], '/', '-');
+                   $date = date('Y-m-d H:i:s', strtotime($date));
+                             // statement no need model
+                   $biller = $this->db->get_where('companies', array('id' => $value['shop_id']))->row();
+                   $customer = $this->db->where('company_id',$value['customer_no'])->get('deposits');
+                   $customer_num = $customer->num_rows();
+
+
+                             // if biller id not found error.
+                   if(count($biller) <= 0)
+                   {
+                    $this->session->set_flashdata('error', lang('company_error_mismatch_with_database'));
+                    admin_redirect("sales/customer_opening_balance");
+                }
+
+                             // if biller not customer type
+                if($biller->group_name != 'biller'){
+                    $this->session->set_flashdata('error', lang('company_id_is_not_customer_type'));
+                    admin_redirect("sales/customer_opening_balance");
+                }
+                if($value['deposit'] > 0){
+                         // deposit insert
+                    $data_deposit[]  = array(
+                        'reference'     => $value['invoice_reference'],
+                        'company_id'    => $value['customer_no'],
+                        'amount'        => $value['deposit'],
+                        'paid_by'       => 'cash',
+                        'created_by'    => $this->session->userdata()['user_id'],
+                        'biller_id'     => $value['shop_id'],
+                    );
+                }
+                           
+
+                        $tranNo = $this->db->query("SELECT COALESCE (MAX(tran_no), 0) + 1 as tranNo FROM bpas_gl_trans")->row()->tranNo;
+
+                         // account deposit
+                        $deposit = $this->db->select('*')
+                        ->from('account_settings')
+                        ->join('gl_charts','gl_charts.accountcode = default_sale_deposit','inner')
+                        ->join('gl_sections','gl_sections.sectionid = gl_charts.sectionid','inner')
+                        ->get()->row();
+                        // account opening balance
+                        $balance = $this->db->select('*')
+                        ->from('account_settings')
+                        ->join('gl_charts','gl_charts.accountcode = default_open_balance','inner')
+                        ->join('gl_sections','gl_sections.sectionid = gl_charts.sectionid','inner')
+                        ->get()->row();
+
+                        if($value['deposit'] > 0){
+                            // data deposit
+                            $deposit_gl[] = array(
+                                'tran_type'=>$deposit->accountname,
+                                'tran_no'=>$tranNo,
+                                'tran_date'=>date('Y-m-d h:i:s'),
+                                'sectionid'=>$deposit->sectionid,
+                                'account_code'=>$deposit->accountcode,
+                                'narrative'=>$deposit->accountname,
+                                'amount'=> -$value['deposit'],
+                                'reference_no'=>$value['invoice_reference'],
+                                'invoice_ref'=>NULL,
+                                'ref_type'=>NULL,
+                                'description'=>$value['customer_name'],
+                                'biller_id'=>$biller->id,
+                                'created_by'=>$this->session->userdata()['user_id'],
+                                'updated_by'=>NULL,
+                                'bank'=>1,
+                                'gov_tax'=>0,
+                                'reference_gov_tax'=>NULL,
+                            );
+
+                            $balance_gl[] = array(
+                                'tran_type'=>$balance->accountname,
+                                'tran_no'=>$tranNo,
+                                'tran_date'=>date('Y-m-d h:i:s'),
+                                'sectionid'=>$balance->sectionid,
+                                'account_code'=>$balance->accountcode,
+                                'narrative'=>$balance->accountname,
+                                'amount'=> $value['deposit'],
+                                'reference_no'=>$value['invoice_reference'],
+                                'invoice_ref'=>NULL,
+                                'ref_type'=>NULL,
+                                'description'=>$value['customer_name'],
+                                'biller_id'=>$biller->id,
+                                'created_by'=>$this->session->userdata()['user_id'],
+                                'updated_by'=>NULL,
+                                'bank'=>1,
+                                'gov_tax'=>0,
+                                'reference_gov_tax'=>NULL,
+                            );
+                        }
+
+                         // sale insert
+                        $data_insert[] = array(
+                            'reference_no'  =>  $value['invoice_reference'],
+                            'customer_id'   =>  $value['customer_no'],
+                            'date'          =>  $date,
+                            'biller'        =>  $biller->name,
+                            'biller_id'     =>  $biller->id,
+                            'warehouse_id'  =>  0,
+                            'opening_ar'    =>  2,
+                            'customer'      =>  $value['customer_name'],
+                            'total'         =>  $value['balance'],
+                            'grand_total'   =>  $value['balance'],
+                            'sale_status'   =>  'completed',
+                            'payment_status'=>  'due',
+                            'payment_term'  =>  $value['term'],
+                            'created_by'    =>  $this->session->userdata()['user_id'],
+                            'saleman_by'    =>  $value['sale_id'],
+                            'sale_type'     =>  1,
+                        );
+                    }
+                    if($data_deposit){
+                        $this->db->insert_batch('deposits',$data_deposit);
+                    }
+                    if($data_deposit){
+                        $this->db->insert_batch('gl_trans',$deposit_gl);
+                        $this->db->insert_batch('gl_trans',$balance_gl);
+                    }
+
+                    $insert = $this->db->insert_batch('sales',$data_insert);
+                    if($insert)
+                    {
+                        $this->session->set_flashdata('message', $this->lang->line("customer_opening_balance_added"));
+                        admin_redirect("sales/customer_opening_balance");
+                    }
+                }
+            }
+        $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sales')), array('link' => '#', 'page' => lang('customer_opening_balance')));
+        $meta = array('page_title' => lang('customer_opening_balance'), 'bc' => $bc);
+        $this->page_construct('sales/customer_opening_balance', $meta, $this->data);
+    }
+    public function view_attachment($id = null)
+    {
+        $this->bpas->checkPermissions(false, true);
+        //$this->data['payments'] = $this->sales_model->getInvoicePayments($id);
+        $this->data['inv'] = $this->sales_model->getInvoiceByID($id);
+        $this->load->view($this->theme . 'property/sales/view_attachment', $this->data);
+    }
+
+    public function add_attachment($id = null)
+        {
+            $this->bpas->checkPermissions(false, true);
+
+            $this->form_validation->set_rules('document', lang("attachment"), 'xss_clean');
+
+            if ($this->form_validation->run() == true) {
+                if (count($_FILES['document']['name']) > 0 && !empty($_FILES['document']['name'])) {
+                    $this->load->library('upload');
+                    $no = 1;
+                    $files = '';
+                    $filesCount = count($_FILES['document']['name']);
+
+                    for ($i=0; $i < $filesCount ; $i++) {
+
+                        $filesName = rand().$_FILES['document']['name'][$i];
+                        $_FILES['file']['name']     = $filesName; 
+                        $_FILES['file']['type']     = $_FILES['document']['type'][$i]; 
+                        $_FILES['file']['tmp_name'] = $_FILES['document']['tmp_name'][$i]; 
+                        $_FILES['file']['error']     = $_FILES['document']['error'][$i]; 
+                        $_FILES['file']['size']     = $_FILES['document']['size'][$i];
+
+                        $config['upload_path']    = $this->digital_upload_path;
+                        $config['allowed_types']  = $this->digital_file_types;
+                        $config['max_size']       = $this->allowed_file_size;
+                        $config['overwrite']      = false;
+                        $this->upload->initialize($config);
+                        if (!$this->upload->do_upload('file') && $_FILES['document']['name'][$i] != '') {
+                            $error = $this->upload->display_errors();
+                            $this->session->set_flashdata('error', $error);
+                            redirect($_SERVER["HTTP_REFERER"]);
+                        }
+                        if ($_FILES['document']['name'][$i] != '') {
+                            if($filesCount==$no){
+                                $files .= $filesName;
+                            }else{
+                                $files .= $filesName.',';
+                            }
+                        } else {
+                         $files = null; 
+                     }
+
+                     $no++;
+                 }
+                 $attachment = $this->sales_model->getInvoiceByID($id);
+                 if ($attachment->attachment != null && $attachment->attachment != '') {
+                    $data['attachment'] = $attachment->attachment.','.$files;
+                } else {
+                    $data['attachment'] = $files;
+                }
+            }
+        } elseif ($this->input->post('submit_doc')) {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        //$this->sales_model->addPayment($payment, $customer_id)
+        if ($this->form_validation->run() == true && $this->sales_model->addAttachment($data, $id)) {
+            $this->session->set_flashdata('message', lang("attachment_added"));
+            redirect($_SERVER["HTTP_REFERER"]);
+        } else {
+
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['inv'] = $this->sales_model->getInvoiceByID($id);
+            $this->load->view($this->theme . 'property/sales/add_attachment', $this->data);
+        }   
+    }
+
+    public function delete_doc($id = null, $document = null)
+    {
+        $this->bpas->checkPermissions('delete');
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $attachment = $this->sales_model->getInvoiceByID($id);
+        $files = explode(',', $attachment->attachment);
+        foreach ($files as $key => $file) {
+            if ($file == $document) {
+                array_splice($files, $key, 1);
+                unlink('files/'.$document);
+            }
+        }
+        if (count($files) > 0) {
+            $data['attachment'] = implode(',', $files);
+        } else {
+            $data['attachment'] = null;
+        }
+
+        if ($this->sales_model->addAttachment($data, $id)) {
+            $this->session->set_flashdata('message', lang("attachment_deleted"));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+    }
+    public function add_loan_payment($id = null){
+        $this->bpas->checkPermissions('payments', true);
+        $getexchange_khm = $this->bpas->getExchange_rate('KHR');
+        $getexchange_bat = $this->bpas->getExchange_rate('THB');
+        $exchange_khm = $getexchange_khm->rate;
+        $exchange_bat = $getexchange_bat->rate;
+
+        $this->load->helper('security');
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $sale = $this->sales_model->getInvoiceByID($id);
+        if ($sale->payment_status == 'paid' && $sale->grand_total == $sale->paid) {
+            $this->session->set_flashdata('error', lang("sale_already_paid"));
+            $this->bpas->md();
+        }
+
+        $sale = $this->sales_model->getInvoiceByID($id);
+        if ($sale->is_loan == 1 ) {
+            $this->session->set_flashdata('error', lang("Loan is Exist"));
+            $this->bpas->md();
+        }
+
+        //$this->form_validation->set_rules('reference_no', lang("reference_no"), 'required');
+        $this->form_validation->set_rules('amount-paid', lang("amount"), 'required');
+        $this->form_validation->set_rules('paid_by', lang("paid_by"), 'required');
+        $this->form_validation->set_rules('month', lang("monthly"), 'numeric|required');
+
+
+        $this->form_validation->set_rules('userfile', lang("attachment"), 'xss_clean');
+        if ($this->form_validation->run() == true) {
+            if ($this->input->post('paid_by') == 'deposit') {
+                $sale = $this->sales_model->getInvoiceByID($this->input->post('sale_id'));
+                $customer_id = $sale->customer_id;
+                if ( ! $this->site->check_customer_deposit($customer_id, $this->input->post('amount-paid'))) {
+                    $this->session->set_flashdata('error', lang("amount_greater_than_deposit"));
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+            } else {
+                $customer_id = null;
+            }
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+            $paid_usd = $this->bpas->formatDecimal($this->input->post('amount-paid'));
+            $paid_khm = $this->bpas->formatDecimal($this->input->post('amount-paid_khm'));
+            $paid_bat = $this->bpas->formatDecimal($this->input->post('amount-paid_bat'));
+
+            $us_khm = $paid_khm / $exchange_khm;
+            $us_bat = $paid_bat / $exchange_bat;
+            $paid = $this->input->post('amount-paid');
+            // $amount = $paid_usd + $us_khm + $us_bat;
+            $amount = $paid != null ? 0 : $paid_usd + $us_khm + $us_bat;;
+            $paid_amount = $paid != null ? 0 : $paid_usd.','.$paid_khm.','.$paid_bat;
+
+            $payment = array(
+                'date'          => $date,
+                'sale_id'       => $this->input->post('sale_id'),
+                'reference_no'  => $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('pay'),
+                //    'amount'      => $this->input->post('amount-paid'),
+                'amount'        => $amount,
+                'paid_by'       => $this->input->post('paid_by'),
+                'cheque_no'     => $this->input->post('cheque_no'),
+                'cc_no'         => $this->input->post('paid_by') == 'gift_card' ? $this->input->post('gift_card_no') : $this->input->post('pcc_no'),
+                'cc_holder'     => $this->input->post('pcc_holder'),
+                'cc_month'      => $this->input->post('pcc_month'),
+                'cc_year'       => $this->input->post('pcc_year'),
+                'cc_type'       => $this->input->post('pcc_type'),
+                'note'          => $this->input->post('note'),
+                'created_by'    => $this->session->userdata('user_id'),
+                'type'          => 'received',
+                'paid_amount'   => $paid_amount,
+                'currency_rate' => '1,'.$exchange_khm.','.$exchange_bat
+            );
+
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $payment['attachment'] = $photo;
+            }
+        //$this->bpas->print_arrays($payment);
+        } elseif ($this->input->post('add_payment')) {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        if ($this->form_validation->run() == true) {
+            if ($this->input->post('month') < 1 ){
+                $this->session->set_flashdata('warning', lang('monthly_payment_required'));
+                redirect(isset($_SERVER["HTTP_REFERER"]) ? $_SERVER["HTTP_REFERER"] : 'sales');
+            }else{
+                $sales= $this->sales_model->getInvoiceByID($id);
+                $priciple= $this->bpas->formatDecimal($this->input->post('amount-paid'));
+                $final_amount = $this->bpas->formatDecimal($this->input->post('amount-paid'));
+                $interest_rate= $this->pos_settings->interest_rate;
+                $months= $this->input->post('month');
+                if($interest_rate > 0) {
+                    $monthly_payment = (($interest_rate / (100 * 12)) * $priciple) / (1 - pow(1 + $interest_rate / 1200, (-$months)));
+                    $loan_payment = $this->bpas->formatDecimal($monthly_payment * $months);
+                    $monthly = $this->bpas->formatDecimal($monthly_payment);
+                    $total_interest = $this->bpas->formatDecimal($monthly_payment * $months - $priciple);
+
+
+                    $create_date = date_create($this->bpas->fld(trim($this->input->post('date'))));
+                    $now = date_format($create_date, 'Y-m-d');
+                    $start = strtotime($now);
+                    for ($month = 1; $month <= (int)$months; $month++) {
+                        $interest = $priciple * $interest_rate / 1200;
+                        $principal = $monthly_payment - $interest;
+                        $newbalance = $priciple - ($monthly_payment - $interest);
+
+                        $start = strtotime("+1 month", $start);
+                        $loan_payment = array(
+                            'sale_id' => $id,
+                            'user_id' => $this->session->userdata('user_id'),
+                            'reference' => $this->site->getReference('loan'),
+                            'warehouse_id' => $this->session->userdata('warehouse_id'),
+                            'customer_id' => $sales->customer_id,
+                            'pay_date' => date("Y-m-d", $start),
+                            'monthly_payment' => $this->bpas->formatDecimal($monthly_payment),
+                            'principal' => $this->bpas->formatDecimal($principal),
+                            'interest' => $this->bpas->formatDecimal($interest),
+                            'balance' => $this->bpas->formatDecimal($newbalance)
+                        );
+                        $this->db->insert('loan_payment', $loan_payment);
+
+                        $priciple -= $principal;
+                    }
+                    $update_reference = 1;
+                    $this->site->updateReference('loan');
+
+                }else{
+
+                    $monthly_payment = $final_amount / $months;
+
+                    $create_date = date_create($this->bpas->fld(trim($this->input->post('date'))));
+                    $now = date_format($create_date, 'Y-m-d');
+                    $start = strtotime($now);
+                    for ($month = 1; $month <= (int)$months; $month++) {
+
+                        $interest = $final_amount * $interest_rate / 1200;
+                    //  $principal = $monthly_payment - $interest;
+                        $principal = $final_amount - $monthly_payment;
+                        $newbalance= $final_amount-($monthly_payment - $interest);
+
+                        $start = strtotime("+1 month", $start);
+                        $loan_payment = array(
+                            'sale_id' => $id,
+                            'user_id' => $this->session->userdata('user_id'),
+                            'reference' => $this->site->getReference('loan'),
+                            'warehouse_id' => $this->session->userdata('warehouse_id'),
+                            'customer_id' => $sales->customer_id,
+                            'pay_date' => date("Y-m-d", $start),
+                            'monthly_payment' => $this->bpas->formatDecimal($monthly_payment),
+                            'principal' => $this->bpas->formatDecimal($principal),
+                            'interest' => $this->bpas->formatDecimal($interest),
+                            'balance' => $this->bpas->formatDecimal($newbalance)
+                        );
+                        $this->db->insert('loan_payment', $loan_payment);
+
+                        $final_amount -= $monthly_payment;
+                    }
+                    $update_reference = 1;
+                    $this->site->updateReference('loan');
+                    $this->db->update('sales', 
+                        array('is_loan' => 1, 'paid_type'=>$this->input->post('paid_type')), 
+                        array('id' => $id));
+                }
+            }
+            $this->session->set_flashdata('message', lang("payment_added"));
+            redirect($_SERVER["HTTP_REFERER"]);
+        } else {
+
+                $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+                if ($sale->sale_status == 'returned' && $sale->paid == $sale->grand_total) {
+                    $this->session->set_flashdata('warning', lang('payment_was_returned'));
+                    $this->bpas->md();
+                }
+            $this->data['inv'] = $sale;
+            $this->data['payment_ref'] = ''; //$this->site->getReference('pay');
+            $this->data['modal_js'] = $this->site->modal_js();
+
+            $this->load->view($this->theme . 'property/loans/add_loan_payment', $this->data);
+        }
+    }
+
+    function delivery_alerts($warehouse_id = NULL)
+    {    
+        $this->data['warehouse_id'] = $warehouse_id;
+        $this->data['users'] = $this->site->getStaff();
+        $this->data['warehouses'] = $this->site->getAllWarehouses();
+        $this->data['billers'] = $this->site->getAllCompanies('biller');
+        $this->data['error'] = validation_errors() ? validation_errors() : $this->session->flashdata('error');
+        $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sales')), array('link' => '#', 'page' => lang('list_delivery_alerts')));
+        $meta = array('page_title' => lang('list_delivery_alerts'), 'bc' => $bc);
+        $this->page_construct('sales/delivery_alerts', $meta, $this->data);
+    }
+
+    function getDeliveryAlerts($warehouse_id = NULL)
+    {
+        $this->bpas->checkPermissions('index');  
+
+        if ($this->input->get('customer')) {
+            $customer = $this->input->get('customer');
+        } else {
+            $customer = NULL;
+        }
+        if ($this->input->get('start_date')) {
+            $start_date = $this->input->get('start_date');
+        } else {
+            $start_date = NULL;
+        }
+        if ($this->input->get('end_date')) {
+            $end_date = $this->input->get('end_date');
+        } else {
+            $end_date = NULL;
+        }
+        if ($start_date) {
+            $start_date = $this->bpas->fld($start_date . ' 00:00:00');
+            $end_date   = $this->bpas->fld($end_date . ' 23:59:00');
+        }
+
+        if ((! $this->Owner || ! $this->Admin) && ! $warehouse_id) {
+            $user = $this->site->getUser();
+            $warehouse_id = $user->warehouse_id;
+        }
+        
+        $add_payment_link = anchor('pos/index/$1', '<i class="fa fa-money"></i> ' . lang('add_payment'), '');      
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+        <ul class="dropdown-menu pull-right" role="menu">            
+        <li>' . $add_payment_link . '</li>
+        </ul>
+        </div></div>';
+
+        $this->load->library('datatables');
+        $this->datatables
+        ->select("
+            sales_order.id as id, 
+            sales_order.date, 
+            sales_order.reference_no, 
+            project.company, 
+            cust.name as customer, 
+            CONCAT_WS(' ', bpas_users.first_name, bpas_users.last_name), 
+            COALESCE(SUM(bpas_sale_order_items.quantity), 0) as qty, 
+            COALESCE(SUM(bpas_sale_order_items.quantity_received), 0) as qty_received, 
+            COALESCE(SUM(bpas_sale_order_items.quantity), 0) - COALESCE(SUM(bpas_sale_order_items.quantity_received), 0) as balance, 
+            (IF(ISNULL(".$this->db->dbprefix("sales_order").".delivery_status), CONCAT(bpas_sales_order.id, '___', 'delivery'), CONCAT(bpas_sales_order.id, '___', ".$this->db->dbprefix("sales_order").".delivery_status))) as delivery_status")
+        ->from('sales_order')
+        ->join('companies as bpas_cust', 'cust.id = sales_order.customer_id', 'inner')
+        ->join('companies as bpas_project', 'project.id = sales_order.biller_id', 'inner')
+        ->join('users', 'sales_order.saleman_by = users.id', 'left')
+        ->join('sale_order_items', 'sales_order.id = sale_order_items.sale_id', 'left')
+        ->where('sales_order.sale_status', 'order')
+        ->where('DATE_SUB(delivery_date, INTERVAL (SELECT alert_day FROM bpas_settings) DAY) < CURDATE()')
+        ->where('sales_order.order_status', 'approved')
+        ->group_by('sales_order.id');
+
+        if ($customer) {
+            $this->datatables->where('sales_order.customer_id', $customer);
+        }
+        if ($start_date || $end_date) {
+            $this->datatables->where($this->db->dbprefix('sales_order').'.date BETWEEN "' . $start_date . '" AND "' . $end_date . '"');
+        }
+
+        $this->datatables->add_column("Actions", $action, "id");
+        echo $this->datatables->generate();  
+    }
+    public function getZonesBySaleman_ajax($id)
+    {
+        $result = [];
+        if(($result['z_b_user'] = $this->site->getZoneByUser($id)) && ($result['z_all'] = $this->site->getAllZones())){
+            $this->bpas->send_json($result);
+        } else {
+            $this->bpas->send_json(false); 
+        }
+    }
+
+    public function dental_clinic($id = null){
+      //  $this->bpas->checkPermissions('index');
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $inv                 = $this->sales_model->getInvoiceByID($id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by);
+        }
+        $this->data['barcode']     = "<img src='" . admin_url('products/gen_barcode/' . $inv->reference_no) . "' alt='" . $inv->reference_no . "' class='pull-left' />";
+        $this->data['customer']    = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['payments']    = $this->sales_model->getPaymentsForSale($id);
+        $this->data['biller']      = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['created_by']  = $this->site->getUser($inv->created_by);
+        $this->data['updated_by']  = $inv->updated_by ? $this->site->getUser($inv->updated_by) : null;
+        $this->data['saleman']      = $this->site->getUser($inv->saleman_by);
+        
+        $this->data['warehouse']   = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['inv']         = $inv;
+        $this->data['rows']        = $this->sales_model->getAllInvoiceItems($id);
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        $this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+        $this->data['paypal']      = $this->sales_model->getPaypalSettings();
+        $this->data['skrill']      = $this->sales_model->getSkrillSettings();
+        $this->data['KHM']  = $this->bpas->getExchange_rate('KHR');
+        $this->data['BAT']  = $this->bpas->getExchange_rate('THB');
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('view')]];
+        $meta = ['page_title' => lang('view_sales_details'), 'bc' => $bc];
+        //    $this->page_construct('sales/view', $meta, $this->data);
+        $this->page_construct('sales/view_clinic', $meta, $this->data);
+    }
+
+    public function view_dental_payment($id = null){
+        $this->bpas->checkPermissions('payments', true);
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        
+        $payment                  = $this->sales_model->getPaymentByID($id);
+        $inv                      = $this->sales_model->getInvoiceByID($payment->sale_id);
+        $this->data['biller']     = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['customer']   = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['warehouse']  = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['created_by']  = $this->site->getUser($payment->created_by);
+        $this->data['inv']        = $inv;
+        $this->data['payment']    = $payment;
+        $this->data['page_title'] = lang('view_dental_payment');
+
+        $this->load->view($this->theme . 'sales/view_dental_payment', $this->data);
+    }
+
+    public function view_Downpayment($id = null){
+        $this->bpas->checkPermissions('payments', true);
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+
+        $payment                  = $this->sales_model->getDownPaymentByID($id);
+        $inv                      = $this->sales_model->getInvoiceByID($payment->sale_id);
+        $this->data['biller']     = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['customer']   = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['warehouse']  = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['created_by']  = $this->site->getUser($payment->created_by);
+        $this->data['inv']        = $inv;
+        $this->data['payment']    = $payment;
+        $this->data['page_title'] = lang('view_Down_payment');
+
+        $this->load->view($this->theme . 'sales/view_Downpayment', $this->data);
+    }
+
+    public function add_draw($id = null)
+    {
+       // $this->bpas->checkPermissions('payments', true);
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+
+        $inv = $this->sales_model->getInvoiceByID($id);
+        $this->data['customer']   = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['inv'] = $inv;
+        $this->data['draw_image'] = $this->sales_model->getLastDrawImage($id, $inv->customer_id);
+        $this->data['page_title'] = lang('add_draw');
+
+        $this->load->view($this->theme . 'sales/add_draw', $this->data);
+    }
+    function wpain_upload($id = null)
+    {
+        $teeth_model = $_POST["teeth_model"];
+        $image = $_POST['image'];
+        $sale_id = $_POST['sale_id'];
+        $customer_id = $_POST['customer_id'];
+        
+        if($teeth_model == "teeth_model1"){
+            $teeth_model= "Adult";
+        } elseif ($teeth_model== "teeth_model2"){
+            $teeth_model= "Child";
+        } else {
+            $teeth_model="AdultChild";
+        }
+
+        $image = imagecreatefrompng($image);
+        $id = uniqid();
+        imagealphablending($image, false);
+        imagesavealpha($image, true);
+        $image_name = $teeth_model.'-' . $id . '.png';
+        imagepng($image, 'assets/uploads/wpain/' . $image_name . '');
+
+        $this->db->update('sales', ['image' => $image_name], ['id' => $sale_id]);
+       // $this->db->update('companies', ['attachment' => $image_name], ['id' => $customer_id]);
+        echo 'success';
+    }
+    function customers_alerts(){
+        $this->bpas->checkPermissions('index');
+        $this->data['companies'] = $this->site->getAllCompanies('customer');
+        $this->data['error'] = validation_errors() ? validation_errors() : $this->session->flashdata('error');
+
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('list_customers_alerts')]];
+        $meta = ['page_title' => lang('list_customers_alerts'), 'bc' => $bc];
+        $this->page_construct('sales/customers_alerts', $meta, $this->data);
+    }
+    function getCustomersAlerts()
+	{
+        $this->bpas->checkPermissions('index');
+        $customer = $this->input->get('customer') ? $this->input->get('customer') : null;
+        $this->load->library('datatables');
+		$this->datatables
+			->select("companies.id, name as customer_id, cf4 as gen, phone, email, address, SUM(grand_total-paid) as balance, due_date")
+			->from('sales')
+            ->join('companies', 'companies.id = sales.customer_id')
+            ->where('due_date !=', NULL)->where('due_date !=', '0000-00-00')
+            ->where('DATE_SUB(due_date, INTERVAL(SELECT alert_day FROM bpas_settings) DAY) < CURDATE()')
+            ->where(array('payment_status !=' => 'paid', 'sale_status !=' => 'returned', 'hide' => 1))
+            ->group_by('customer_id');
+
+		if ($customer) {
+			$this->datatables->where('companies.id', $customer);
+		}
+
+        echo $this->datatables->generate();  
+	}
+    function getSaleRef($tax_id)
+    {
+        if($tax_id == 1 || $tax_id == null){
+            $this->bpas->send_json($this->site->getReference('so'));
+        } else {
+            $this->bpas->send_json($this->site->getReference('st'));
+        }
+    }
+
+    function getPayment_and_Balance()
+    {
+        $data = array();
+        $q = $this->db->query("
+                    SELECT 
+                        super.id, 
+                        super.reference_no, 
+                        super.date, 
+                        super.customer, 
+                        super.grand_total, 
+                        super.paid, 
+                        (super.grand_total - super.paid) AS cur_balance,
+                        COALESCE((SELECT COALESCE(SUM(ss.grand_total - ss.paid), 0) FROM bpas_sales AS ss WHERE ss.date < super.date AND ss.customer_id = super.customer_id GROUP BY ss.customer_id), 0) AS last_balance,
+                        ((super.grand_total - super.paid) + COALESCE((SELECT COALESCE(SUM(ss.grand_total - ss.paid), 0) FROM bpas_sales AS ss WHERE ss.date < super.date AND ss.customer_id = super.customer_id GROUP BY ss.customer_id), 0)) AS total_balance,
+                        (
+                            SELECT GROUP_CONCAT(sub.payment SEPARATOR '____') 
+                            FROM (
+                                SELECT 
+                                    bpas_sales.id AS id, 
+                                    bpas_sales.reference_no, 
+                                    bpas_sales.date, 
+                                    bpas_sales.customer_id,
+                                    COALESCE(pay.descr, CONCAT('0', '__', 'Payment not yet!', '__', bpas_sales.date, '__', bpas_sales.reference_no, '__', (bpas_sales.grand_total - bpas_sales.paid), '__', bpas_sales.payment_status)) AS payment,
+                                    COALESCE(pay.amount, CONCAT('0', '__', 'Payment not yet!', '__', bpas_sales.date, '__', bpas_sales.reference_no, '__', bpas_sales.payment_status)) AS total_amount
+                                FROM bpas_sales
+                                LEFT JOIN (
+                                    SELECT 
+                                        bpas_payments.id, 
+                                        bpas_payments.sale_id, 
+                                        bpas_payments.reference_no, 
+                                        SUM(bpas_payments.amount) AS amount, 
+                                        GROUP_CONCAT('1', '__', bpas_payments.date, '__', bpas_payments.reference_no, '__', bpas_payments.amount, '__', bpas_payments.paid_by, '__', (SELECT CONCAT(sss.date, '__', sss.reference_no, '__', (sss.grand_total - sss.paid), '__', sss.payment_status) FROM bpas_sales AS sss WHERE sss.id = bpas_payments.sale_id) SEPARATOR '____') AS descr
+                                    FROM bpas_payments 
+                                    WHERE bpas_payments.sale_id != 0 AND bpas_payments.sale_id != 'NULL' 
+                                    GROUP BY bpas_payments.sale_id
+                                ) AS pay ON pay.sale_id = bpas_sales.id
+                            WHERE bpas_sales.sale_status != 'pending'
+                            GROUP BY bpas_sales.id
+                            ) AS sub 
+                            WHERE sub.customer_id = super.customer_id AND sub.date <= super.date
+                        ) AS descr_
+                    FROM bpas_sales AS super GROUP BY super.id
+                ");
+        if ($q->num_rows() > 0) {
+            foreach (($q->result()) as $row) {
+                $data[] = $row;        
+            }
+        }
+
+        if(!empty($data)){
+            $data_arr = array();
+            foreach ($data as $key => $data_row) {
+                $str = "";
+                $last_pay_date = "";
+                $payments = explode("____", $data_row->descr_);
+                foreach ($payments as $key => $payment) {
+                    $arr_pay = explode("__", $payment);
+                    if($arr_pay[0] == 1){
+                        if($data_row->date >= $arr_pay[1]){
+                            $last_pay_date = $arr_pay[1];
+                        }
+                    }
+                }
+                if($last_pay_date != ""){
+                    foreach ($payments as $key => $payment) {
+                        $arr_pay = explode("__", $payment);
+                        if($arr_pay[5] < $last_pay_date){
+                            if($arr_pay[count($arr_pay)-1] != 'paid'){
+                                $str .= $payment . '____';
+                            }
+                        } else {
+                            $str .= $payment . '____';
+                        }
+                    }
+                } else {
+                    $str = $data_row->descr_;
+                }
+                $data_arr[] = $str;
+            }
+        }
+        return $data_arr;
+    }
+
+    function getP()
+    {
+        $data = array();
+        $q = $this->db->query("
+                    SELECT 
+                        super.id, 
+                        super.reference_no, 
+                        super.date, 
+                        super.customer, 
+                        super.grand_total, 
+                        super.paid, 
+                        (super.grand_total - super.paid) AS cur_balance,
+                        COALESCE((SELECT COALESCE(SUM(ss.grand_total - ss.paid), 0) FROM bpas_sales AS ss WHERE ss.date < super.date AND ss.customer_id = super.customer_id GROUP BY ss.customer_id), 0) AS last_balance,
+                        ((super.grand_total - super.paid) + COALESCE((SELECT COALESCE(SUM(ss.grand_total - ss.paid), 0) FROM bpas_sales AS ss WHERE ss.date < super.date AND ss.customer_id = super.customer_id GROUP BY ss.customer_id), 0)) AS total_balance,
+                        (
+                            SELECT GROUP_CONCAT(sub.payment SEPARATOR '____') 
+                            FROM (
+                                SELECT 
+                                    bpas_sales.id AS id, 
+                                    bpas_sales.reference_no, 
+                                    bpas_sales.date, 
+                                    bpas_sales.customer_id,
+                                    COALESCE(pay.descr, CONCAT('0', '__', 'Payment not yet!', '__', bpas_sales.date, '__', bpas_sales.reference_no, '__', bpas_sales.payment_status)) AS payment,
+                                    COALESCE(pay.amount, CONCAT('0', '__', 'Payment not yet!', '__', bpas_sales.date, '__', bpas_sales.reference_no, '__', bpas_sales.payment_status)) AS total_amount
+                                FROM bpas_sales
+                                LEFT JOIN (
+                                    SELECT 
+                                        bpas_payments.id, 
+                                        bpas_payments.sale_id, 
+                                        bpas_payments.reference_no, 
+                                        SUM(bpas_payments.amount) AS amount, 
+                                        GROUP_CONCAT('1', '__', bpas_payments.date, '__', bpas_payments.reference_no, '__', bpas_payments.amount, '__', bpas_payments.paid_by, '__', (SELECT CONCAT(sss.date, '__', sss.reference_no, '__', sss.payment_status) FROM bpas_sales AS sss WHERE sss.id = bpas_payments.sale_id) SEPARATOR '____') AS descr
+                                    FROM bpas_payments 
+                                    WHERE bpas_payments.sale_id != 0 AND bpas_payments.sale_id != 'NULL' 
+                                    GROUP BY bpas_payments.sale_id
+                                ) AS pay ON pay.sale_id = bpas_sales.id
+                            WHERE bpas_sales.sale_status != 'pending'
+                            GROUP BY bpas_sales.id
+                            ) AS sub 
+                            WHERE sub.customer_id = super.customer_id AND sub.date <= super.date
+                        ) AS descr_
+                    FROM bpas_sales AS super GROUP BY super.id
+                ");
+        if ($q->num_rows() > 0) {
+            foreach (($q->result()) as $row) {
+                $data[] = $row;        
+            }
+        }
+
+        // $this->bpas->print_arrays($data);
+    }
+
+    function getPaymentNote()
+    {
+        $note = array();
+        $data = $this->getPayment_and_Balance();
+        if(!empty($data)){
+            foreach ($data as $key => $data_arr) {
+                $str = "";
+                $payments = explode('____', $data_arr);
+                foreach ($payments as $key_ => $payment) {
+                    $values = explode('__', $payment);
+                    if($values[0] == 1){
+                        $str .= PHP_EOL;
+                        $str .= $key_ + 1 . ' ' . $values[2] . ' (' . $values[1] . ') ' . ' ' . $values[3] . ' ' . $values[4] . ' | ' . $values[6] . ' (' . $values[5] . ') ' . $values[7] . ' ' . $values[8];
+                    } else {
+                        $str .= PHP_EOL;
+                        $str .= $key_ + 1 . ' ' . $values[1] . ' | ' . $values[3] . ' (' . $values[2] . ') ' . $values[4] . ' ' . $values[5];
+                    }
+                }
+                $note[] = $str;
+            }
+        }
+
+        // $this->bpas->print_arrays($note);
+    }
+    public function option_number()
+    {
+        if ($this->input->get('option_id')) {
+            $id = $this->input->get('option_id');
+        }
+        $data['options']     = $this->site->getOptionRowByID($id);
+
+        echo json_encode($data);
+    }
+    
+    public function tax_invoice($id = null)
+    {
+        $this->bpas->checkPermissions('index', true);
+
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $inv                 = $this->sales_model->getInvoiceByID($id);
+
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by, true);
+        }
+        $this->data['payments']    = $this->sales_model->getPaymentsForSale($id);
+        $this->data['customer']    = $this->site->getCompanyByID($inv->customer_id);
+        $this->data['biller']      = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['created_by']  = $this->site->getUser($inv->created_by);
+        $this->data['updated_by']  = $inv->updated_by ? $this->site->getUser($inv->updated_by) : null;
+        $this->data['warehouse']   = $this->site->getWarehouseByID($inv->warehouse_id);
+        $this->data['inv']         = $inv;
+        $this->data['currency']    = $this->site->getCurrencyByCode($inv->currency);
+        $this->data['rows']        = $this->sales_model->getAllInvoiceItems($id);
+        $this->data['return_sale'] = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        $this->data['return_rows'] = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+        $this->data['TotalSalesDue'] = $this->sales_model->getTotalSalesDue($inv->customer_id,'');
+        $this->data['last_balance']  = $this->site->getSalesLastBalanceByDate($inv->date, $inv->customer_id);
+        $this->data['total_balance'] = $this->site->getSalesTotalBalanceByDate($inv->date, $inv->customer_id);
+        $this->load->view($this->theme . 'sales/tax_invoice', $this->data);
+    }
+
+    public function getDepositByCustomerID_Ajax()
+    {
+        $customer_id = $this->input->get('customer_id');
+        $deposit = $this->site->getCustomerDeposit($customer_id);
+        $this->bpas->send_json($deposit);
+    }
+
+    public function getWarehouseByID_Ajax() 
+    {
+        $warehouse_id = $this->input->get('warehouse_id');
+        $warehouse    = $this->site->getWarehouseByID($warehouse_id);
+        $this->bpas->send_json($warehouse);
+    } 
+    
+    public function ticket($warehouse_id = null)
+    {
+        $this->bpas->checkPermissions();
+        $count = explode(',', $this->session->userdata('warehouse_id'));
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        if ($this->Owner || $this->Admin || !$this->session->userdata('warehouse_id')) {
+            $this->data['warehouses']   = $this->site->getAllWarehouses();
+            $this->data['warehouse_id'] = $warehouse_id;
+            $this->data['warehouse']    = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+        } else {
+            if (count($count)>1) {
+                $this->data['warehouses']   = $this->site->getAllWarehouses();
+            } else {
+                $this->data['warehouses']   = null;
+            }
+            $this->data['count_warehouses'] = $count;
+            $this->data['warehouse_id'] = $warehouse_id;
+            $this->data['warehouse']    = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+        }
+
+        // $this->data['alert_id'] = isset($_GET['alert_id']) ? $_GET['alert_id'] : null;
+        $this->data['alert_id'] = isset($_GET['alert_id']) ? ($_GET['alert_id'] !== '' ? $_GET['alert_id'] : 'empty')  : null;
+
+        $biller_id = $this->session->userdata('biller_id');
+        $this->data['users'] = $this->site->getStaff();
+        $this->data['products'] = $this->site->getProducts();
+        $this->data['warehouses'] = $this->site->getAllWarehouses();
+        $this->data['billers'] = $this->site->getAllCompanies('biller');
+        $this->data['user_billers'] = $this->site->getCompanyByID($biller_id);
+        $this->data['drivers']  = $this->site->getDriver();
+        
+            $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => '#', 'page' => lang('sales')]];
+            $meta = ['page_title' => lang('sales'), 'bc' => $bc];
+            $this->page_construct('express/ticket', $meta, $this->data);
+        
+    }
+    
+    public function add_ticket($sale_order_id = null, $quote_id = null)
+    {   
+        $this->bpas->checkPermissions();
+        $getexchange_khm = $this->bpas->getExchange_rate('KHR');
+        $getexchange_bat = $this->bpas->getExchange_rate('THB');
+        $exchange_khm    = $getexchange_khm->rate;
+        $exchange_bat    = $getexchange_bat->rate;
+        if($sale_order_id){
+            $sale_o = $this->sales_order_model->getSaleOrder($sale_order_id); 
+            if(($this->sales_order_model->getSaleOrder($sale_order_id)->order_status) == 'pending'){
+                $this->session->set_flashdata('error', lang("sale_order_n_approved"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+            if(($this->sales_order_model->getSaleOrder($sale_order_id)->order_status) == 'rejected'){
+                $this->session->set_flashdata('error', lang("sale_order_has_been_rejected"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+            if(($this->sales_order_model->getSaleOrder($sale_order_id)->sale_status) == 'completed'){
+                $this->session->set_flashdata('error', lang("sale_order_has_been_created"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+        }
+        $sale_id = $sale_order_id ? $sale_order_id : null;
+        $this->form_validation->set_message('is_natural_no_zero', lang('no_zero_required'));
+        $this->form_validation->set_rules('customer', lang('customer'), 'required');
+        $this->form_validation->set_rules('biller', lang('biller'), 'required');
+        $this->form_validation->set_rules('sale_status', lang('sale_status'), 'required');
+        $this->form_validation->set_rules('payment_status', lang('payment_status'), 'required');
+        $this->form_validation->set_rules('reference_no', lang('reference_no'), 'required');
+        $this->form_validation->set_rules('from', lang('from'), 'required');
+        $this->form_validation->set_rules('destination', lang('destination'), 'required');
+        $this->form_validation->set_rules('date_out', lang('departure_date'), 'required');
+        $this->form_validation->set_rules('time_out', lang('time_out'), 'required');
+
+        if ($this->form_validation->run() == true) {
+            $reference = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('so');
+
+            // $reference = $this->site->CheckedSaleReference($this->input->post('reference_no'), $this->site->getReference('so'));
+
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = date('Y-m-d H:i:s');
+            }
+        
+            $project_id       = $this->input->post('project') ? $this->input->post('project') : $this->Settings->default_project ;
+            $warehouse_id     = $this->input->post('warehouse');
+            $customer_id      = $this->input->post('customer');
+            $biller_id        = $this->input->post('biller');
+            $total_items      = $this->input->post('total_items');
+            $sale_status      = $this->input->post('sale_status');
+            $payment_status   = $this->input->post('payment_status');
+            $payment_term     = $this->input->post('payment_term');
+            $payment_term_details   = $this->site->getAllPaymentTermByID($payment_term);
+            if ($this->Settings->payment_term) {
+                $due_date         = $payment_term ? date('Y-m-d', strtotime('+' . $payment_term . ' days', strtotime($date))) : null;
+            }else{
+                $due_date         = (isset($payment_term_details[0]->id)? date('Y-m-d', strtotime($date . '+' . $payment_term_details[0]->due_day . ' days')) : NULL);
+            }
+
+            $shipping         = $this->input->post('shipping') ? $this->input->post('shipping') : 0;
+            $customer_details = $this->site->getCompanyByID($customer_id);
+            $customer         = !empty($customer_details->company) && $customer_details->company != '-' ? $customer_details->company.'/'.$customer_details->name : $customer_details->name;
+            $biller_details   = $this->site->getCompanyByID($biller_id);
+            $biller           = !empty($biller_details->company) && $biller_details->company != '-' ? $biller_details->company.'/'.$biller_details->name : $biller_details->name;
+            $note             = $this->bpas->clear_tags($this->input->post('note'));
+            $staff_note       = $this->bpas->clear_tags($this->input->post('staff_note'));
+            $quote_id         = $this->input->post('quote_id') ? $this->input->post('quote_id') : null;
+            // $total_weight     = 0;
+            $commission_product = 0;
+            $text_items = "";
+            $total            = 0;
+            $product_tax      = 0;
+            $product_discount = 0;
+            $digital          = false;
+            $gst_data         = [];
+            $total_cgst       = $total_sgst       = $total_igst       = 0;
+            $i                = isset($_POST['product_code']) ? sizeof($_POST['product_code']) : 0;
+            for ($r = 0; $r < $i; $r++) {
+                $item_id            = $_POST['product_id'][$r];
+                $item_type          = $_POST['product_type'][$r];
+                $item_code          = $_POST['product_code'][$r];
+                $item_name          = $_POST['product_name'][$r];
+                $item_option        = isset($_POST['product_option'][$r]) && $_POST['product_option'][$r] != 'false' && $_POST['product_option'][$r] != 'null' ? $_POST['product_option'][$r] : null;
+                $real_unit_price    = $this->bpas->formatDecimal($_POST['real_unit_price'][$r]);
+                $unit_price         = $this->bpas->formatDecimal($_POST['unit_price'][$r]);
+                $item_unit_quantity = $_POST['quantity'][$r];
+                $item_serial        = isset($_POST['serial'][$r]) ? $_POST['serial'][$r] : '';
+                $item_max_serial    = isset($_POST['max_serial'][$r]) ? $_POST['max_serial'][$r] : '';
+                $item_tax_rate      = isset($_POST['product_tax'][$r]) ? $_POST['product_tax'][$r] : null;
+                $item_discount      = isset($_POST['product_discount'][$r]) ? $_POST['product_discount'][$r] : null;
+                $item_unit          = $_POST['product_unit'][$r];
+                $item_quantity      = $_POST['product_base_quantity'][$r];
+                $item_addition_type = isset($_POST['addition_type'][$r]) ? $_POST['addition_type'][$r] :'';
+                $item_warranty      = isset($_POST['warranty'][$r]) ? $_POST['warranty'][$r] : '';
+                $item_weight        = $_POST['product_weight'][$r];
+                $item_detail        = isset($_POST['product_detail'][$r]) ? $_POST['product_detail'][$r] : '';
+                if (isset($item_code) && isset($real_unit_price) && isset($unit_price) && isset($item_quantity)) {
+                    $product_details = $item_type != 'manual' ? $this->sales_model->getProductByCode($item_code) : null;
+                    // $unit_price = $real_unit_price;
+                    $cost = $product_details->cost;
+                    if ($item_type == 'digital') {
+                        $digital = true;
+                    }
+                    $pr_discount      = $this->site->calculateDiscount($item_discount, $unit_price);
+                    $unit_price       = $this->bpas->formatDecimal($unit_price - $pr_discount);
+                    $item_net_price   = $unit_price;
+                    $pr_item_discount = $this->bpas->formatDecimal($pr_discount * $item_unit_quantity);
+                    $product_discount += $pr_item_discount;
+                    $pr_item_tax = $item_tax = 0;
+                    $tax         = '';
+
+                    if (isset($item_tax_rate) && $item_tax_rate != 0) {
+                        $tax_details = $this->site->getTaxRateByID($item_tax_rate);
+                        $ctax        = $this->site->calculateTax($product_details, $tax_details, $unit_price);
+                        $item_tax    = $ctax['amount'];
+                        $tax         = $ctax['tax'];
+                        if (!$product_details || (!empty($product_details) && $product_details->tax_method != 1)) {
+                            $item_net_price = $unit_price - $item_tax;
+                        }
+                        $pr_item_tax = $this->bpas->formatDecimal(($item_tax * $item_unit_quantity), 4);
+                        if ($this->Settings->indian_gst && $gst_data = $this->gst->calculteIndianGST($pr_item_tax, ($biller_details->state == $customer_details->state), $tax_details)) {
+                            $total_cgst += $gst_data['cgst'];
+                            $total_sgst += $gst_data['sgst'];
+                            $total_igst += $gst_data['igst'];
+                        }
+                    }
+
+                    $product_tax += $pr_item_tax;
+                    $subtotal     = (($item_net_price * $item_unit_quantity) + $pr_item_tax);
+                    $unit         = $this->site->getUnitByID($item_unit);
+                    $total_weight = number_format((float) ($item_weight * $item_unit_quantity), 4, '.', '');
+                    $getitems     = $this->site->getProductByID($item_id);
+                    $commission_item = $this->site->getProductCommissionByID($getitems->id);
+                    $purchase_unit_cost = $product_details->cost;
+                    $saleman = $this->site->getuser($this->input->post('saleman_by'));
+                    if($commission_item){
+                        $commission_product += $commission_item->price * $item_quantity;
+                    }
+                    if ($unit->id != $product_details->unit) {
+                        $cost =$this->site->convertCostingToBase($purchase_unit_cost,$unit);
+                    } else {
+                        $cost = $cost;
+                    }
+                    $product = [
+                        'product_id'        => $item_id,
+                        'product_code'      => $item_code,
+                        'product_name'      => $item_name,
+                        'product_type'      => $item_type,
+                        'option_id'         => $item_option,
+                        'purchase_unit_cost'=> $purchase_unit_cost ? $purchase_unit_cost : NULL,
+                        'net_unit_price'    => $item_net_price,
+                        'unit_price'        => $this->bpas->formatDecimal($item_net_price + $item_tax),
+                        'quantity'          => $item_quantity,
+                        'product_unit_id'   => $unit ? $unit->id : null,
+                        'product_unit_code' => $unit ? $unit->code : null,
+                        'unit_quantity'     => $item_unit_quantity,
+                        'warehouse_id'      => $warehouse_id,
+                        'item_tax'          => $pr_item_tax,
+                        'tax_rate_id'       => $item_tax_rate,
+                        'tax'               => $tax,
+                        'discount'          => $item_discount,
+                        'item_discount'     => $pr_item_discount,
+                        'subtotal'          => $this->bpas->formatDecimal($subtotal),
+                        'serial_no'         => $item_serial,
+                        'max_serial'        => $item_max_serial,
+                        'real_unit_price'   => $real_unit_price,
+                        'addition_type'     => $item_addition_type,
+                        'warranty'          => $item_warranty,
+                        'weight'            => $item_weight,
+                        'total_weight'      => $total_weight,
+                        'comment'           => $item_detail,
+                        'commission'        => isset($commission_item->price) ? $commission_item->price * $item_quantity : 0,
+                    ];
+                    $text_items .=  $r+1 . "/ " . $item_name . "(".$item_code.")" ." | ". $item_quantity." | ".$this->bpas->formatDecimal($real_unit_price) ." | ". $pr_item_discount ." | ". $this->bpas->formatDecimal($subtotal)."\n";
+             
+
+                    $products[] = ($product + $gst_data);
+                    $total += $this->bpas->formatDecimal(($item_net_price * $item_unit_quantity), 4);
+                }
+            }
+            if (empty($products)) {
+                $this->form_validation->set_rules('product', lang('order_items'), 'required');
+            } else {
+                krsort($products);
+            }
+
+            $order_discount = $this->site->calculateDiscount($this->input->post('order_discount'), ($total + $product_tax));
+            $total_discount = $this->bpas->formatDecimal(($order_discount + $product_discount), 4);
+            $order_tax      = $this->site->calculateOrderTax($this->input->post('order_tax'), ($total + $product_tax - $order_discount));
+            $total_tax      = $this->bpas->formatDecimal(($product_tax + $order_tax), 4);
+            $grand_total    = $this->bpas->formatDecimal(($total + $total_tax + $this->bpas->formatDecimal($shipping) - $order_discount), 4);
+            $saleman_award_points = 0;
+            $user = $this->site->getUser($this->session->userdata('user_id'));
+
+            $staff = $this->site->getUser($this->input->post('saleman_by'));
+            if(!empty($staff) && $staff->save_point){
+                if (!empty($this->Settings->each_sale)) {
+                    $saleman_award_points = floor(($grand_total / $this->Settings->each_sale) * $this->Settings->sa_point);
+                }
+            }
+
+
+       
+            $data       = [
+                'date' => $date,
+                'project_id'          => $this->input->post('project'),
+                'so_id'               => $this->input->post('sale_order_id') ? $this->input->post('sale_order_id') : null,
+                'reference_no'        => $reference,
+                'po_number'           => $this->input->post('po'),
+                'customer_id'         => $customer_id,
+                'customer'            => $customer,
+                'biller_id'           => $biller_id,
+                'biller'              => $biller,
+                'warehouse_id'        => $warehouse_id,
+                'note'                => $note,
+                'staff_note'          => $staff_note,
+                'total'               => $total,
+                'product_discount'    => $product_discount,
+                'order_discount_id'   => $this->input->post('order_discount'),
+                'order_discount'      => $order_discount,
+                'total_discount'      => $total_discount,
+                'product_tax'         => $product_tax,
+                'order_tax_id'        => $this->input->post('order_tax'),
+                'order_tax'           => $order_tax,
+                'total_tax'           => $total_tax,
+                'shipping'            => $this->bpas->formatDecimal($shipping),
+                'grand_total'         => $grand_total,
+                'total_items'         => $total_items,
+                'sale_status'         => $sale_status,
+                'payment_status'      => $payment_status,
+                'payment_term'        => $payment_term,
+                'due_date'            => $due_date,
+                'paid'                => 0, 
+                'created_by'          => $this->session->userdata('user_id'),
+                'hash'                => hash('sha256', microtime() . mt_rand()),
+                'saleman_by'          => $this->input->post('saleman_by'),
+                'zone_id'             => $this->input->post('zone_id') ? $this->input->post('zone_id') : null,
+                'currency_rate_kh'    => $exchange_khm,
+                'currency_rate_bat'   => $exchange_bat,
+                'saleman_award_points'=> (!empty($saleman_award_points) && !is_nan($saleman_award_points)) ? $saleman_award_points : 0,
+                'module_type'         => 'express',
+                'from_id'             => $this->input->post('from'),
+                'date_out'            => $this->input->post('date_out') ? $this->bpas->fsd($this->input->post('date_out')) : null,
+                'time_out_id'         => $this->input->post('time_out'),
+                'destination_id'      => $this->input->post('destination'),
+            ];
+
+            if ($payment_status == 'partial' || $payment_status == 'paid') {
+                if ($this->input->post('paid_by') == 'deposit') {
+                    if (!$this->site->check_customer_deposit($customer_id, $this->input->post('amount-paid'))) {
+                        $this->session->set_flashdata('error', lang('amount_greater_than_deposit'));
+                        redirect($_SERVER['HTTP_REFERER']);
+                    }
+                }
+                if ($this->input->post('paid_by') == 'gift_card') {
+                    $gc            = $this->site->getGiftCardByNO($this->input->post('gift_card_no'));
+                    $amount_paying = $grand_total >= $gc->balance ? $gc->balance : $grand_total;
+                    $gc_balance    = $gc->balance - $amount_paying;
+                    $payment       = [
+                        'date'         => $date,
+                        'reference_no' => $this->input->post('payment_reference_no'),
+                        'amount'       => $this->bpas->formatDecimal($amount_paying),
+                        'paid_by'      => $this->input->post('paid_by'),
+                        'cheque_no'    => $this->input->post('cheque_no'),
+                        'cc_no'        => $this->input->post('gift_card_no'),
+                        'cc_holder'    => $this->input->post('pcc_holder'),
+                        'cc_month'     => $this->input->post('pcc_month'),
+                        'cc_year'      => $this->input->post('pcc_year'),
+                        'cc_type'      => $this->input->post('pcc_type'),
+                        'created_by'   => $this->session->userdata('user_id'),
+                        'note'         => $this->input->post('payment_note'),
+                        'type'         => 'received',
+                        'gc_balance'   => $gc_balance,
+                    ];
+                } else {
+                    $payment = [
+                        'date'         => $date,
+                        'reference_no' => $this->input->post('payment_reference_no'),
+                        'amount'       => $this->bpas->formatDecimal($this->input->post('amount-paid')),
+                        'paid_by'      => $this->input->post('paid_by'),
+                        'cheque_no'    => $this->input->post('cheque_no'),
+                        'cc_no'        => $this->input->post('pcc_no'),
+                        'cc_holder'    => $this->input->post('pcc_holder'),
+                        'cc_month'     => $this->input->post('pcc_month'),
+                        'cc_year'      => $this->input->post('pcc_year'),
+                        'cc_type'      => $this->input->post('pcc_type'),
+                        'created_by'   => $this->session->userdata('user_id'),
+                        'note'         => $this->input->post('payment_note'),
+                        'type'         => 'received',
+                    ];
+                }
+                $amount_paying = $this->bpas->formatDecimal($this->input->post('amount-paid'));
+                    //=====add accountig=====//
+                if($this->Settings->module_account == 1){
+                    if($this->input->post('paid_by') == 'deposit'){
+                        $payment['bank_account'] = $this->accounting_setting->default_sale_deposit;
+                        $paying_to = $this->accounting_setting->default_sale_deposit;
+                    }else{
+                        $payment['bank_account'] = $this->input->post('bank_account');
+                        $paying_to = $this->input->post('bank_account');
+                    }
+
+                    if($amount_paying < $grand_total){
+                        $accTranPayments[] = array(
+                            'tran_type' => 'Payment',
+                            'tran_date' => $date,
+                            'reference_no' => $this->input->post('payment_reference_no'),
+                            'account_code' => $this->accounting_setting->default_receivable,
+                            'amount' => ($grand_total - $amount_paying),
+                            'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                            'description' => $this->input->post('payment_note'),
+                            'biller_id' => $biller_id,
+                            'project_id' => $project_id,
+                            'customer_id' => $customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                        );
+                    }
+              
+                    $accTranPayments[] = array(
+                        'tran_type' => 'Payment',
+                        'tran_date' => $date,
+                        'reference_no' => $this->input->post('payment_reference_no'),
+                        'account_code' => $paying_to,
+                        'amount' => $amount_paying,
+                        'narrative' => $this->site->getAccountName($paying_to),
+                        'description' => $this->input->post('payment_note'),
+                        'biller_id' => $biller_id,
+                        'project_id' => $project_id,
+                        'customer_id' => $customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                    );
+                }
+                    //=====end accountig=====//
+            } else {
+                $accTranPayments= [];
+                $payment = [];
+                $accTrans[] = array(
+                    'tran_type' => 'Sale',
+                    'tran_date' => $date,
+                    'reference_no' => $reference,
+                    'account_code' => $this->accounting_setting->default_receivable,
+                    'amount' => $grand_total,
+                    'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                    'biller_id' => $biller_id,
+                    'project_id' => $project_id,
+                    'customer_id' => $customer_id,
+                    'created_by'  => $this->session->userdata('user_id'),
+                    'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                );
+            }
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path']   = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size']      = $this->allowed_file_size;
+                $config['overwrite']     = false;
+                $config['encrypt_name']  = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                $photo              = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+                      
+            //----checked orver credit--------
+            $cus_sales = $this->sales_model->getSalesTotals($customer_id);
+            if(($customer_details->credit_limit != null) && (($cus_sales->total_amount - $cus_sales->paid) + $data['grand_total'] - (($payment_status == 'partial' || $payment_status == 'paid') ? $payment['amount'] : 0)) > $customer_details->credit_limit){
+                $this->session->set_flashdata('error', lang("customer_due_over_credit_amount"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->addSale($data, $products, $payment, $si_return = array(), $accTrans, $accTranPayments, null, $commission_product)) {
+            $this->session->set_userdata('remove_slls', 1);
+            
+            if ($quote_id) {
+                $this->db->update('quotes', ['status' => 'completed'], ['id' => $quote_id]);
+            }
+            if ($sale_id) {
+                $status = 'completed';
+                $sale_order_id    = $this->input->post('sale_order_id');
+                $sale_items       = $this->site->getSaleItemsBySaleOrderID($sale_order_id);
+                $sale_order_items = $this->site->getSaleOrderItemsBySaleID($sale_id);
+
+                foreach($sale_order_items as $item){
+                    $key = array_search($item->product_code, array_column($sale_items, 'product_code'));
+                    if($key !== false){
+                        if($item->quantity > $sale_items[$key]->quantity){
+                            $status = 'partial';
+                            break;
+                        }
+                    } else {
+                        $status = 'partial';
+                        break;
+                    }
+                }
+
+                $this->db->update('sales_order', array('sale_status' => $status), array('id' => $sale_id));
+            }
+
+            $this->session->set_flashdata('message', lang('sale_added'));
+            admin_redirect('sales/ticket');
+        } else {
+            if ($quote_id || $sale_id) {
+                if ($quote_id) {
+                    $this->data['quote'] = $this->quotes_model->getQuoteByID($quote_id);
+                    $items               = $this->quotes_model->getAllQuoteItems($quote_id);
+                    $this->data['inv']   = $this->data['quote'];
+                    $sale_items = [];
+                } elseif ($sale_id) {
+                    $this->data['quote'] = $this->sales_order_model->getInvoiceByID($sale_id);
+                    $items               = $this->sales_order_model->getAllInvoiceItems($sale_id);
+                    $this->data['inv']   = $this->data['quote'];
+                    $sale_items          = $this->site->getSaleItemsBySaleOrderID($sale_id);
+                }
+                krsort($items);
+                $c = rand(100000, 9999999);
+                foreach ($items as $item) {
+                    $b = false;
+                    if($sale_items !== false){
+                        $key = array_search($item->product_code, array_column($sale_items, 'product_code'));
+                        if($key !== false){
+                            if($item->unit_quantity > $sale_items[$key]->quantity){
+                                $item->unit_quantity = $item->unit_quantity - $sale_items[$key]->quantity;
+                            } else {
+                                $b = true;
+                            }
+                        } 
+                    }
+                    if($b == true){
+                        continue;
+                    }
+
+                    $row = $this->site->getProductByID($item->product_id);
+                    if (!$row) {
+                        $row             = json_decode('{}');
+                        $row->tax_method = 0;
+                    } else {
+                        unset($row->cost, $row->details, $row->product_details, $row->image, $row->barcode_symbology, $row->cf1, $row->cf2, $row->cf3, $row->cf4, $row->cf5, $row->cf6, $row->supplier1price, $row->supplier2price, $row->cfsupplier3price, $row->supplier4price, $row->supplier5price, $row->supplier1, $row->supplier2, $row->supplier3, $row->supplier4, $row->supplier5, $row->supplier1_part_no, $row->supplier2_part_no, $row->supplier3_part_no, $row->supplier4_part_no, $row->supplier5_part_no);
+                    }
+                    $row->quantity = 0;
+                    $pis           = $this->site->getPurchasedItems($item->product_id, $item->warehouse_id, $item->option_id);
+                    if ($pis) {
+                        foreach ($pis as $pi) {
+                            $row->quantity += $pi->quantity_balance;
+                        }
+                    }
+
+                    $row->id                 = $item->product_id;
+                    $row->code               = $item->product_code;
+                    $row->name               = $item->product_name;
+                    $row->type               = $item->product_type;
+                    $row->qty                = $item->quantity;
+                    $row->base_quantity      = $item->quantity;
+                    $row->base_unit          = isset($row->unit) ? $row->unit : $item->product_unit_id;
+                    $row->base_unit_price    = isset($row->price) ? $row->price : $item->unit_price;
+                    $row->unit               = $item->product_unit_id;
+                    $row->qty                = $item->unit_quantity;
+                    $row->discount           = $item->discount ? $item->discount : '0';
+                    $row->item_tax           = $item->item_tax      > 0 ? $item->item_tax      / $item->quantity : 0;
+                    $row->item_discount      = $item->item_discount > 0 ? $item->item_discount / $item->quantity : 0;
+                    $row->price              = $this->bpas->formatDecimal($item->net_unit_price + $this->bpas->formatDecimal($row->item_discount));
+                    $row->unit_price         = $row->tax_method ? $item->unit_price + $this->bpas->formatDecimal($row->item_discount) + $this->bpas->formatDecimal($row->item_tax) : $item->unit_price + ($row->item_discount);
+                    $row->real_unit_price    = $item->real_unit_price;
+                    $row->tax_rate           = $item->tax_rate_id;
+                    $row->serial             = '';
+                    $row->serial_no          = isset($row->serial_no);
+                    //  $row->weight             = $item->weight;
+                    $row->option             = $item->option_id;
+                    $row->details            = $item->comment;
+                    $options                 = $this->sales_model->getProductOptions($row->id, $item->warehouse_id);
+                    if ($options) {
+                        $option_quantity = 0;
+                        foreach ($options as $option) {
+                            $pis = $this->site->getPurchasedItems($row->id, $item->warehouse_id, $item->option_id);
+                            if ($pis) {
+                                foreach ($pis as $pi) {
+                                    $option_quantity += $pi->quantity_balance;
+                                }
+                            }
+                            if ($option->quantity > $option_quantity) {
+                                $option->quantity = $option_quantity;
+                            }
+                        }
+                    }
+                    $combo_items = false;
+                    if ($row->type == 'combo') {
+                        $combo_items = $this->sales_model->getProductComboItems($row->id, $item->warehouse_id);
+                    }
+
+                    $units    = $this->site->getUnitsByBUID($row->base_unit);
+                    $tax_rate = $this->site->getTaxRateByID($row->tax_rate);
+                    $ri       = $this->Settings->item_addition ? $row->id : $c;
+                    $set_price = $this->site->getUnitByProId($row->id);
+                    $pr[$ri] = ['id' => $c, 'item_id' => $row->id, 'label' => $row->name . ' (' . $row->code . ')',
+                    'row'        => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 'set_price'=>$set_price, 'units' => $units, 'options' => $options, ];
+                    $c++;
+                }
+                $this->data['quote_items'] = json_encode($pr);
+            }
+            $this->data['count']         = explode(',', $this->session->userdata('warehouse_id'));
+            $this->data['projects']      = $this->site->getAllProject();
+            $this->data['error']         = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['quote_id']      = $quote_id ? $quote_id : $sale_id;
+            $this->data['sale_order_id'] = $sale_order_id;
+            $this->data['billers']       = $this->site->getAllCompanies('biller');
+            $this->data['data']          = $this->site->getBillerByUser($this->session->userdata('user_id'));
+            $companyID                   = explode(',',$this->data['data']->multi_biller);
+            $this->data['mbillers']      = $this->site->getAllCompaniesByBiller('biller', $companyID);
+            $this->data['agencies']      = $this->site->getAllUsers();
+            $this->data['payment_term']  = $this->site->getAllPaymentTerm();
+            $this->data['warehouses']    = $this->site->getAllWarehouses();
+            $this->data['tax_rates']     = $this->site->getAllTaxRates();
+            $this->data['units']         = $this->site->getAllBaseUnits();
+            $this->data['zones']         = $this->site->getAllZones();
+            $this->data['group_price']   = json_encode($this->site->getAllGroupPrice());
+            $Settings = $this->site->getSettings();
+            $this->data['salemans']      = $this->site->getAllSalemans($this->Settings->group_saleman_id);
+            //$this->data['currencies']  = $this->sales_model->getAllCurrencies();
+            $this->data['slnumber']      = $this->site->getReference('so');
+            $this->data['sltaxnumber']   = $this->site->getReference('st');
+            $this->data['payment_ref']   = ''; //$this->site->getReference('pay');
+            $bc                          = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('add_ticket')]];
+            $meta                        = ['page_title' => lang('add_sale'), 'bc' => $bc];
+            $this->page_construct('express/add', $meta, $this->data);
+        }
+    }
+
+    
+    public function view_ticket($sale_id = null, $modal = null)
+    {
+        $this->bpas->checkPermissions('index');
+        $user_id = $this->session->userdata('user_id');
+        $currency_id=$this->site->getCurrencyWarehouseByUserID($user_id);
+        $curr=$this->site->getCurrencyByID($currency_id);
+        
+        if ($this->input->get('id')) {
+            $sale_id = $this->input->get('id');
+        }
+        $this->load->helper('pos');
+        $this->data['error']   = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+        $this->data['message'] = $this->session->flashdata('message');
+        $inv                   = $this->sales_model->getInvoiceByID($sale_id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by, true);
+        }
+        
+        $this->data['rows']                  = $this->sales_model->getAllInvoiceItems($sale_id);
+        $biller_id                           = $inv->biller_id;
+        $customer_id                         = $inv->customer_id;
+        $this->data['biller']                = $this->sales_model->getCompanyByID($biller_id);
+        $this->data['customer']              = $this->sales_model->getCompanyByID($customer_id);
+        $this->data['payments']              = $this->sales_model->getInvoicePayments($sale_id);
+        $this->data['pos']                   = $this->sales_model->getSetting();
+        //$this->data['barcode']               = $this->barcode($inv->reference_no, 'code128', 30);
+        $this->data['return_sale']           = $inv->return_id ? $this->sales_model->getInvoiceByID($inv->return_id) : null;
+        $this->data['return_rows']           = $inv->return_id ? $this->sales_model->getAllInvoiceItems($inv->return_id) : null;
+        $this->data['return_payments']       = $this->data['return_sale'] ? $this->sales_model->getInvoicePayments($this->data['return_sale']->id) : null;
+        $this->data['inv']                   = $inv;
+        $this->data['sid']                   = $sale_id;
+        $this->data['modal']                 = $modal;
+        $this->data['created_by']            = $this->site->getUser($inv->created_by);
+        $this->data['printer']               = $this->sales_model->getPrinterByID($this->pos_settings->printer);
+        $this->data['page_title']            = $this->lang->line('invoice');
+        $this->data['exchange_rate_bat_in']  = $this->sales_model->getExchange_rate('THB');
+        $this->data['exchange_rate_bat_out'] = $this->sales_model->getExchange_rate('BAT_o');
+        $this->load->view($this->theme . 'express/view_ticket', $this->data);
+        
+    }
+
+    public function edit_ticket($id = null){
+        $this->bpas->checkPermissions();
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $inv = $this->sales_model->getInvoiceByID($id);
+        if ($inv->sale_status == 'returned' || $inv->return_id || $inv->return_sale_ref) {
+            $this->session->set_flashdata('error', lang('sale_x_action'));
+            admin_redirect(isset($_SERVER['HTTP_REFERER']) ? $_SERVER['HTTP_REFERER'] : 'welcome');
+        }
+        if (!$this->session->userdata('edit_right')) {
+            $this->bpas->view_rights($inv->saleman_by);
+        }
+        $this->form_validation->set_message('is_natural_no_zero', lang('no_zero_required'));
+        $this->form_validation->set_rules('reference_no', lang('reference_no'), 'required');
+        $this->form_validation->set_rules('customer', lang('customer'), 'required');
+        $this->form_validation->set_rules('biller', lang('biller'), 'required');
+        $this->form_validation->set_rules('sale_status', lang('sale_status'), 'required');
+        $this->form_validation->set_rules('payment_status', lang('payment_status'), 'required');
+        $this->form_validation->set_rules('from', lang('from'), 'required');
+        $this->form_validation->set_rules('destination', lang('destination'), 'required');
+        $this->form_validation->set_rules('time_out', lang('time_out'), 'required');
+        $this->form_validation->set_rules('date_out', lang('departure_date'), 'required');
+        if ($this->form_validation->run() == true) {
+            $reference = $this->input->post('reference_no');
+            if ($this->Owner || $this->Admin || $this->GP['change_date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = $inv->date;
+            }
+            $project_id = $this->input->post('project') ? $this->input->post('project') : $this->Settings->default_project ;
+            $warehouse_id     = $this->input->post('warehouse');
+    
+            $customer_id      = $this->input->post('customer');
+            $biller_id        = $this->input->post('biller');
+            $total_items      = $this->input->post('total_items');
+            $sale_status      = $this->input->post('sale_status');
+            $payment_status   = $this->input->post('payment_status');
+            $payment_term     = $this->input->post('payment_term');
+            $payment_term_details   = $this->site->getAllPaymentTermByID($payment_term);
+            if ($this->Settings->payment_term) {
+                $due_date         = $payment_term ? date('Y-m-d', strtotime('+' . $payment_term . ' days', strtotime($date))) : null;
+            }else{
+                $due_date         = (isset($payment_term_details[0]->id)? date('Y-m-d', strtotime($date . '+' . $payment_term_details[0]->due_day . ' days')) : NULL);
+            }
+            $shipping         = $this->input->post('shipping') ? $this->input->post('shipping') : 0;
+            $customer_details = $this->site->getCompanyByID($customer_id);
+            $customer         = !empty($customer_details->company) && $customer_details->company != '-' ? $customer_details->company.'/'.$customer_details->name : $customer_details->name;
+            $biller_details   = $this->site->getCompanyByID($biller_id);
+            $biller           = !empty($biller_details->company) && $biller_details->company != '-' ? $biller_details->company.'/'.$biller_details->name : $biller_details->name;
+            $note             = $this->bpas->clear_tags($this->input->post('note'));
+            $staff_note       = $this->bpas->clear_tags($this->input->post('staff_note'));
+            $commission_product = 0;
+            $total            = 0;
+            $product_tax      = 0;
+            $product_discount = 0;
+            $gst_data         = [];
+            $total_cgst       = $total_sgst       = $total_igst       = 0;
+            $i                = isset($_POST['product_code']) ? sizeof($_POST['product_code']) : 0;
+            for ($r = 0; $r < $i; $r++) {
+                $item_id            = $_POST['product_id'][$r];
+                $item_type          = $_POST['product_type'][$r];
+                $item_code          = $_POST['product_code'][$r];
+                $item_name          = $_POST['product_name'][$r];
+                $item_option        = isset($_POST['product_option'][$r]) && $_POST['product_option'][$r] != 'false' && $_POST['product_option'][$r] != 'null' ? $_POST['product_option'][$r] : null;
+                $real_unit_price    = $this->bpas->formatDecimal($_POST['real_unit_price'][$r]);
+                $unit_price         = $this->bpas->formatDecimal($_POST['unit_price'][$r]);
+                $item_unit_quantity = $_POST['quantity'][$r];
+                $item_serial        = isset($_POST['serial'][$r]) ? $_POST['serial'][$r] : '';
+                $item_max_serial        = isset($_POST['max_serial'][$r]) ? $_POST['max_serial'][$r] : '';
+                $item_tax_rate      = isset($_POST['product_tax'][$r]) ? $_POST['product_tax'][$r] : null;
+                $item_discount      = isset($_POST['product_discount'][$r]) ? $_POST['product_discount'][$r] : null;
+                $item_unit          = $_POST['product_unit'][$r];
+                $item_quantity      = $_POST['product_base_quantity'][$r];
+                $item_addition_type = isset($_POST['addition_type'][$r]) ? $_POST['addition_type'][$r] :'';
+                $item_warranty = isset($_POST['warranty'][$r]) ? $_POST['warranty'][$r] :'';
+                $item_detail      = isset($_POST['product_detail'][$r]) ? $_POST['product_detail'][$r] : '';
+                if (isset($item_code) && isset($real_unit_price) && isset($unit_price) && isset($item_quantity)) {
+                    $product_details = $item_type != 'manual' ? $this->sales_model->getProductByCode($item_code) : null;
+                    $cost = $product_details->cost;
+                    if ($item_type == 'digital') {
+                        $digital = true;
+                    }
+
+                    $pr_discount      = $this->site->calculateDiscount($item_discount, $unit_price);
+                    $unit_price       = $this->bpas->formatDecimal($unit_price - $pr_discount);
+                    $item_net_price   = $unit_price;
+                    $pr_item_discount = $this->bpas->formatDecimal($pr_discount * $item_unit_quantity);
+                    $product_discount += $pr_item_discount;
+                    $pr_item_tax = $item_tax = 0;
+                    $tax         = '';
+
+                    if (isset($item_tax_rate) && $item_tax_rate != 0) {
+                        $tax_details = $this->site->getTaxRateByID($item_tax_rate);
+                        $ctax        = $this->site->calculateTax($product_details, $tax_details, $unit_price);
+                        $item_tax    = $ctax['amount'];
+                        $tax         = $ctax['tax'];
+                        if (!$product_details || (!empty($product_details) && $product_details->tax_method != 1)) {
+                            $item_net_price = $unit_price - $item_tax;
+                        }
+                        $pr_item_tax = $this->bpas->formatDecimal(($item_tax * $item_unit_quantity), 4);
+                        if ($this->Settings->indian_gst && $gst_data = $this->gst->calculteIndianGST($pr_item_tax, ($biller_details->state == $customer_details->state), $tax_details)) {
+                            $total_cgst += $gst_data['cgst'];
+                            $total_sgst += $gst_data['sgst'];
+                            $total_igst += $gst_data['igst'];
+                        }
+                    }
+
+                    $product_tax += $pr_item_tax;
+                    $subtotal = (($item_net_price * $item_unit_quantity) + $pr_item_tax);
+                    $unit     = $this->site->getUnitByID($item_unit);
+                    $getitems = $this->site->getProductByID($item_id);
+                    $commission_item = $this->site->getProductCommissionByID($getitems->id);
+                    $purchase_unit_cost = $product_details->cost;
+                    if ($unit->id != $product_details->unit) {
+                        $cost =$this->site->convertCostingToBase($purchase_unit_cost,$unit);
+                    } else {
+                        $cost = $cost;
+                    }
+                    $product = [
+                        'product_id'        => $item_id,
+                        'product_code'      => $item_code,
+                        'product_name'      => $item_name,
+                        'product_type'      => $item_type,
+                        'option_id'         => $item_option,
+                        'purchase_unit_cost'=> $purchase_unit_cost ? $purchase_unit_cost : NULL,
+                        'net_unit_price'    => $item_net_price,
+                        'unit_price'        => $this->bpas->formatDecimal($item_net_price + $item_tax),
+                        'quantity'          => $item_quantity,
+                        'product_unit_id'   => $unit ? $unit->id : null,
+                        'product_unit_code' => $unit ? $unit->code : null,
+                        'unit_quantity'     => $item_unit_quantity,
+                        'warehouse_id'      => $warehouse_id,
+                        'item_tax'          => $pr_item_tax,
+                        'tax_rate_id'       => $item_tax_rate,
+                        'tax'               => $tax,
+                        'discount'          => $item_discount,
+                        'item_discount'     => $pr_item_discount,
+                        'subtotal'          => $this->bpas->formatDecimal($subtotal),
+                        'serial_no'         => $item_serial,
+                        'max_serial'        => $item_max_serial,
+                        'real_unit_price'   => $real_unit_price,
+                        'addition_type'     => $item_addition_type,
+                        'warranty'          => $item_warranty,
+                        'comment'           => $item_detail,
+                        'commission'        => isset($commission_item->price) ? ($commission_item->price * $item_quantity) : 0,
+                        ];
+                    
+                    $commission_product += isset($commission_item->price) ? ($commission_item->price * $item_quantity) : 0;
+                       
+                    //========add accounting=========//
+       
+                    if($this->Settings->module_account == 1 && $item_type != 'manual' && $sale_status=='completed'){
+
+                     
+                            $default_sale = ($item_type == 'standard') ? $this->accounting_setting->default_sale : $this->accounting_setting->other_income;
+                        
+
+                        $accTrans[] = array(
+                            'tran_no' => $id,
+                            'tran_type' => 'Sale',
+                            'tran_date' => $date,
+                            'reference_no' => $reference,
+                            'account_code' =>$this->accounting_setting->default_stock,
+                            'amount' => -($cost * $item_unit_quantity),
+                            'narrative' => $this->site->getAccountName($this->accounting_setting->default_stock),
+                            'description' => $note,
+                            'biller_id' => $biller_id,
+                            'project_id' => $project_id,
+                            'customer_id' => $customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => 0
+                        );
+                        $accTrans[] = array(
+                            'tran_no' => $id,
+                            'tran_type' => 'Sale',
+                            'tran_date' => $date,
+                            'reference_no' => $reference,
+                            'account_code' => $this->accounting_setting->default_cost,
+                            'amount' => ($cost * $item_unit_quantity),
+                            'narrative' => $this->site->getAccountName($this->accounting_setting->default_cost),
+                            'description' => $note,
+                            'biller_id' => $biller_id,
+                            'project_id' => $project_id,
+                            'customer_id' => $customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => $this->site->get_activity($this->accounting_setting->default_cost),
+                        );
+                        $accTrans[] = array(
+                            'tran_no' => $id,
+                            'tran_type' => 'Sale',
+                            'tran_date' => $date,
+                            'reference_no' => $reference,
+                            'account_code' => $default_sale,
+                            'amount' => - $subtotal,
+                            'narrative' =>  $this->site->getAccountName($default_sale),
+                            'description' => $note,
+                            'biller_id' => $biller_id,
+                            'project_id' => $project_id,
+                            'customer_id' => $customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => 0
+                        );
+            
+                    }
+                    //============end accounting=======//
+                    $products[] = ($product + $gst_data);
+                    $total += $this->bpas->formatDecimal(($item_net_price * $item_unit_quantity), 4);
+                }
+            }
+            if (empty($products)) {
+                $this->form_validation->set_rules('product', lang('order_items'), 'required');
+            } else {
+                krsort($products);
+            }
+
+            $order_discount = $this->site->calculateDiscount($this->input->post('order_discount'), ($total + $product_tax));
+            $total_discount = $this->bpas->formatDecimal(($order_discount + $product_discount), 4);
+            $order_tax      = $this->site->calculateOrderTax($this->input->post('order_tax'), ($total + $product_tax - $order_discount));
+            $total_tax      = $this->bpas->formatDecimal(($product_tax + $order_tax), 4);
+            $grand_total    = $this->bpas->formatDecimal(($total + $total_tax + $this->bpas->formatDecimal($shipping) - $order_discount), 4);
+            $saleman_award_points = 0;
+            $staff = $this->site->getUser($inv->saleman_by);
+          
+
+            //=======acounting=========//
+            if($this->Settings->module_account == 1){
+
+                if($order_discount != 0){
+                    $accTrans[] = array(
+                        'tran_no' => $id,
+                        'tran_type' => 'Sale',
+                        'tran_date' => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_sale_discount,
+                        'amount' => $order_discount,
+                        'narrative' => 'Order Discount',
+                        'description' => $note,
+                        'biller_id' => $biller_id,
+                        'project_id' => $project_id,
+                        'customer_id' => $customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                         'activity_type' => 0
+                    );
+                }
+                if($order_tax != 0){
+                    $accTrans[] = array(
+                        'tran_no' => $id,
+                        'tran_type' => 'Sale',
+                        'tran_date' => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_sale_tax,
+                        'amount' => -$order_tax,
+                        'narrative' => 'Order Tax',
+                        'description' => $note,
+                        'biller_id' => $biller_id,
+                        'project_id' => $project_id,
+                        'customer_id' => $customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'activity_type' => 0
+                    );
+                }
+                if($shipping != 0){
+                    $accTrans[] = array(
+                        'tran_no' => $id,
+                        'tran_type' => 'Sale',
+                        'tran_date' => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_sale_freight,
+                        'amount' => -$shipping,
+                        'narrative' => 'Shipping',
+                        'description' => $note,
+                        'biller_id' => $biller_id,
+                        'project_id' => $project_id,
+                        'customer_id' => $customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'activity_type' => 0
+                    );
+                }
+            }
+            //============end accounting=======//
+
+            $data   = ['date' => $date,
+                'project_id'          => $this->input->post('project'),
+                'reference_no'        => $reference,
+                'po_number'                  => $this->input->post('po'),
+                'customer_id'         => $customer_id,
+                'customer'            => $customer,
+                'biller_id'           => $biller_id,
+                'biller'              => $biller,
+                'warehouse_id'        => $warehouse_id,
+                'note'                => $note,
+                'staff_note'          => $staff_note,
+                'total'               => $total,
+                'product_discount'    => $product_discount,
+                'order_discount_id'   => $this->input->post('order_discount'),
+                'order_discount'      => $order_discount,
+                'total_discount'      => $total_discount,
+                'product_tax'         => $product_tax,
+                'order_tax_id'        => $this->input->post('order_tax'),
+                'order_tax'           => $order_tax,
+                'total_tax'           => $total_tax,
+                'shipping'            => $this->bpas->formatDecimal($shipping),
+                'grand_total'         => $grand_total,
+                'total_items'         => $total_items,
+                'sale_status'         => $sale_status,
+                'payment_status'      => $payment_status,
+                'payment_term'        => $payment_term,
+                'due_date'            => $due_date,
+                'updated_by'          => $this->session->userdata('user_id'),
+                'saleman_by'          => $this->input->post('saleman_by'),
+                'zone_id'             => $this->input->post('zone_id'),
+                'updated_at'          => date('Y-m-d H:i:s'),
+                'saleman_award_points'=> $saleman_award_points,
+                'from_id'             => $this->input->post('from'),
+                'date_out'            => $this->input->post('date_out') ? $this->bpas->fsd($this->input->post('date_out')) : null,
+                'time_out_id'         => $this->input->post('time_out'),
+                'destination_id'      => $this->input->post('destination'),
+            ];
+   
+            if($payment_status != 'paid'){
+                if ($payment_status == 'partial') {
+                    if ($this->input->post('paid_by') == 'deposit') {
+                        if (!$this->site->check_customer_deposit($customer_id, $this->input->post('amount-paid'))) {
+                            $this->session->set_flashdata('error', lang('amount_greater_than_deposit'));
+                            redirect($_SERVER['HTTP_REFERER']);
+                        }
+                    }
+                    if ($this->input->post('paid_by') == 'gift_card') {
+                        $gc            = $this->site->getGiftCardByNO($this->input->post('gift_card_no'));
+                        $amount_paying = $grand_total >= $gc->balance ? $gc->balance : $grand_total;
+                        $gc_balance    = $gc->balance - $amount_paying;
+                        $payment       = [
+                            'date'         => $date,
+                            'reference_no' => $this->input->post('payment_reference_no'),
+                            'amount'       => $this->bpas->formatDecimal($amount_paying),
+                            'paid_by'      => $this->input->post('paid_by'),
+                            'cheque_no'    => $this->input->post('cheque_no'),
+                            'cc_no'        => $this->input->post('gift_card_no'),
+                            'cc_holder'    => $this->input->post('pcc_holder'),
+                            'cc_month'     => $this->input->post('pcc_month'),
+                            'cc_year'      => $this->input->post('pcc_year'),
+                            'cc_type'      => $this->input->post('pcc_type'),
+                            'created_by'   => $this->session->userdata('user_id'),
+                            'note'         => $this->input->post('payment_note'),
+                            'type'         => 'received',
+                            'gc_balance'   => $gc_balance,
+                        ];
+                    } else {
+                        $payment = [
+                            'date'         => $date,
+                            'reference_no' => $this->input->post('payment_reference_no'),
+                            'amount'       => $this->bpas->formatDecimal($this->input->post('amount-paid')),
+                            'paid_by'      => $this->input->post('paid_by'),
+                            'cheque_no'    => $this->input->post('cheque_no'),
+                            'cc_no'        => $this->input->post('pcc_no'),
+                            'cc_holder'    => $this->input->post('pcc_holder'),
+                            'cc_month'     => $this->input->post('pcc_month'),
+                            'cc_year'      => $this->input->post('pcc_year'),
+                            'cc_type'      => $this->input->post('pcc_type'),
+                            'created_by'   => $this->session->userdata('user_id'),
+                            'note'         => $this->input->post('payment_note'),
+                            'type'         => 'received',
+                        ];
+                    }
+                    $amount_paying = $this->bpas->formatDecimal($this->input->post('amount-paid'));
+                        //=====add accountig=====//
+                    if($this->Settings->module_account == 1){
+                        if($amount_paying < $grand_total){
+                            $accTranPayments[] = array(
+                                'tran_type' => 'Payment',
+                                'tran_date' => $date,
+                                'reference_no' => $this->input->post('payment_reference_no'),
+                                'account_code' => $this->accounting_setting->default_receivable,
+                                'amount' => ($grand_total - $amount_paying),
+                                'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                                'description' => $this->input->post('payment_note'),
+                                'biller_id' => $biller_id,
+                                'project_id' => $project_id,
+                                'customer_id' => $customer_id,
+                                'created_by'  => $this->session->userdata('user_id'),
+                                'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                            );
+                        }
+                        if($this->input->post('paid_by') == 'deposit'){
+                            $paying_to = $this->accounting_setting->default_sale_deposit;
+                        }else{
+                            $paying_to = $this->input->post('bank_account');
+                        }
+                        $accTranPayments[] = array(
+                            'tran_type' => 'Payment',
+                            'tran_date' => $date,
+                            'reference_no' => $this->input->post('payment_reference_no'),
+                            'account_code' => $paying_to,
+                            'amount' => $amount_paying,
+                            'narrative' => $this->site->getAccountName($paying_to),
+                            'description' => $this->input->post('payment_note'),
+                            'biller_id' => $biller_id,
+                            'project_id' => $project_id,
+                            'customer_id' => $customer_id,
+                            'created_by'  => $this->session->userdata('user_id'),
+                            'activity_type' => 0
+                        );
+                        $accTrans[]=array();
+                    }
+                        //=====end accountig=====//
+                } else {
+                    $payment = [];
+                    $accTranPayments[] = array(
+                        'tran_no' => $id,
+                        'tran_type' => 'Sale',
+                        'tran_date' => $date,
+                        'reference_no' => $reference,
+                        'account_code' => $this->accounting_setting->default_receivable,
+                        'amount' => $grand_total,
+                        'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                        'biller_id' => $biller_id,
+                        'project_id' => $project_id,
+                        'customer_id' => $customer_id,
+                        'created_by'  => $this->session->userdata('user_id'),
+                        'payment_id' => $id,
+                        'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                    );
+                }
+            }else{
+                $accTranPayments[] = array(
+                    'tran_no' => $id,
+                    'tran_type' => 'Sale',
+                    'tran_date' => $date,
+                    'reference_no' => $reference,
+                    'account_code' => $this->accounting_setting->default_receivable,
+                    'amount' => $grand_total,
+                    'narrative' => $this->site->getAccountName($this->accounting_setting->default_receivable),
+                    'biller_id' => $biller_id,
+                    'project_id' => $project_id,
+                    'customer_id' => $customer_id,
+                    'created_by'  => $this->session->userdata('user_id'),
+                    'payment_id' => $id,
+                    'activity_type' => $this->site->get_activity($this->accounting_setting->default_receivable)
+                );
+               // $accTrans=[];
+            }
+         
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path']   = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size']      = $this->allowed_file_size;
+                $config['overwrite']     = false;
+                $config['encrypt_name']  = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                $photo              = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+            $cus_sales = $this->sales_model->getSalesTotals($customer_id);
+            if(($customer_details->credit_limit != null) && (($cus_sales->total_amount - $cus_sales->paid) - ($inv->grand_total - $inv->paid) + $data['grand_total'] - $inv->paid) > $customer_details->credit_limit){
+                $this->session->set_flashdata('error', lang("customer_due_over_credit_amount"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->updateSale($id, $data, $products,'','','')) {
+            $this->session->set_userdata('remove_slls', 1);
+            $this->session->set_flashdata('message', lang('sale_updated'));
+            admin_redirect('sales/ticket');
+        } else {
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['inv'] = $this->sales_model->getInvoiceByID($id);
+            $this->bpas->deadlineDayEditing($this->data['inv']->date);
+            $inv_items = $this->sales_model->getAllInvoiceItems($id);
+                // krsort($inv_items);
+            $c = rand(100000, 9999999);
+            foreach ($inv_items as $item) {
+                    // $row = $this->site->getProductByID($item->product_id);
+                $row = $this->sales_model->getWarehouseProduct($item->product_id, $item->warehouse_id);
+                $cate_id = !empty($item->subcategory_id)?$item->subcategory_id:$item->category_id;
+                if (!$row) {
+                    $row             = json_decode('{}');
+                    $row->tax_method = 0;
+                    $row->quantity   = 0;
+                } else {
+                    unset($row->cost, $row->details, $row->product_details, $row->image, $row->barcode_symbology, $row->cf1, $row->cf2, $row->cf3, $row->cf4, $row->cf5, $row->cf6, $row->supplier1price, $row->supplier2price, $row->cfsupplier3price, $row->supplier4price, $row->supplier5price, $row->supplier1, $row->supplier2, $row->supplier3, $row->supplier4, $row->supplier5, $row->supplier1_part_no, $row->supplier2_part_no, $row->supplier3_part_no, $row->supplier4_part_no, $row->supplier5_part_no);
+                }
+                $pis = $this->site->getPurchasedItems($item->product_id, $item->warehouse_id, $item->option_id);
+                if ($pis) {
+                    $row->quantity = 0;
+                    foreach ($pis as $pi) {
+                        $row->quantity += $pi->quantity_balance;
+                    }
+                }
+                $row->id              = $item->product_id;
+                $row->code            = $item->product_code;
+                $row->name            = $item->product_name;
+                $row->type            = $item->product_type;
+                $row->base_quantity   = $item->quantity;
+                $row->base_unit       = !empty($row->unit) ? $row->unit : $item->product_unit_id;
+                $row->base_unit_price = !empty($row->price) ? $row->price : $item->unit_price;
+                $row->unit            = $item->product_unit_id;
+                $row->qty             = $item->unit_quantity;
+                $row->quantity       += $item->quantity;
+                $row->discount        = $item->discount ? $item->discount : '0';
+                $row->item_tax        = $item->item_tax      > 0 ? $item->item_tax      / $item->quantity : 0;
+                $row->item_discount   = $item->item_discount > 0 ? $item->item_discount / $item->quantity : 0;
+                $row->price           = $this->bpas->formatDecimal($item->net_unit_price + $this->bpas->formatDecimal($row->item_discount));
+                $row->unit_price      = $row->tax_method ? $item->unit_price + $this->bpas->formatDecimal($row->item_discount) + $this->bpas->formatDecimal($row->item_tax) : $item->unit_price + ($row->item_discount);
+                $row->real_unit_price = $item->real_unit_price;
+                $row->tax_rate        = $item->tax_rate_id;
+                $row->serial          = '';
+                $row->serial_no       = $item->serial_no;
+                $row->max_serial      = $item->max_serial;
+                $row->warranty        = $item->warranty;
+                $row->option          = $item->option_id;
+                $row->addition_type   = $item->addition_type;
+                $options              = $this->sales_model->getProductOptions($row->id, $item->warehouse_id);
+                $product_options      = $this->site->getAllProductOption($row->id);
+                $row->details         = $item->comment;
+                $row->option_name     = $item->option_name;
+                if ($options) {
+                    $option_quantity = 0;
+                    foreach ($options as $option) {
+                        $pis = $this->site->getPurchasedItems($row->id, $item->warehouse_id, $item->option_id);
+                        if ($pis) {
+                            foreach ($pis as $pi) {
+                                $option_quantity += $pi->quantity_balance;
+                            }
+                        }
+                        $option_quantity += $item->quantity;
+                        if ($option->quantity > $option_quantity) {
+                            $option->quantity = $option_quantity;
+                        }
+                    }
+                }
+
+                $combo_items = false;
+                if ($row->type == 'combo') {
+                    $combo_items = $this->sales_model->getProductComboItems($row->id, $item->warehouse_id);
+                    $te          = $combo_items;
+                    foreach ($combo_items as $combo_item) {
+                        $combo_item->quantity = $combo_item->qty * $item->quantity;
+                    }
+                }
+
+                $categories           = $this->site->getCategoryByID($cate_id);
+                $fiber_type           = $this->sales_model->getFiberTypeById($row->id);
+                 
+                $categories->type_id  = $row->addition_type;
+                 
+                $fibers = array('fiber' => $categories, 'type' => $fiber_type, );
+
+                $units    = !empty($row->base_unit) ? $this->site->getUnitsByBUID($row->base_unit) : null;
+                $tax_rate = $this->site->getTaxRateByID($row->tax_rate);
+                $ri       = $this->Settings->item_addition ? $row->id : $c;
+                $set_price = $this->site->getUnitByProId($row->id);
+                $pr[$ri] = ['id' => $c, 'item_id' => $row->id, 'label' => $row->name . ' (' . $row->code . ')',
+                'row'        => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate,'set_price'=>$set_price, 'units' => $units, 'options' => $options, 'fiber' => $fibers,'product_options' => $product_options, ];
+                $c++;
+            }
+            
+            $this->data['count']        = explode(',', $this->session->userdata('warehouse_id'));
+            $this->data['projects']     = $this->site->getAllProject();
+            $this->data['inv_items']    = json_encode($pr);
+            $this->data['id']           = $id;
+            $this->data['payment_term'] = $this->site->getAllPaymentTerm();
+            $this->data['agencies']     = $this->site->getAllUsers();
+            //$this->data['currencies'] = $this->site->getAllCurrencies();
+            $this->data['billers']      = ($this->Owner || $this->Admin || !$this->session->userdata('biller_id')) ? $this->site->getAllCompanies('biller') : null;
+            $this->data['units']        = $this->site->getAllBaseUnits();
+            $this->data['tax_rates']    = $this->site->getAllTaxRates();
+            $this->data['warehouses']   = $this->site->getAllWarehouses();
+            $this->data['zones']        = $this->site->getAllZones();
+            $Settings                   = $this->site->getSettings();
+            $this->data['salemans']     = $this->site->getAllSalemans($this->Settings->group_saleman_id);
+
+            $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => admin_url('sales'), 'page' => lang('sales')], ['link' => '#', 'page' => lang('edit_sale')]];
+            $meta = ['page_title' => lang('edit_sale'), 'bc' => $bc];
+            $this->page_construct('express/edit', $meta, $this->data);
+        }
+    }
+    public function renew($warehouse_id = null)
+    {
+        $this->bpas->checkPermissions();
+        $count = explode(',', $this->session->userdata('warehouse_id'));
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        if ($this->Owner || $this->Admin || !$this->session->userdata('warehouse_id')) {
+            $this->data['warehouses']   = $this->site->getAllWarehouses();
+            $this->data['warehouse_id'] = $warehouse_id;
+            $this->data['warehouse']    = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+        } else {
+            if (count($count)>1) {
+                $this->data['warehouses']   = $this->site->getAllWarehouses();
+            } else {
+                $this->data['warehouses']   = null;
+            }
+            $this->data['count_warehouses'] = $count;
+            $this->data['warehouse_id'] = $warehouse_id;
+            $this->data['warehouse']    = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+        }
+
+        // $this->data['alert_id'] = isset($_GET['alert_id']) ? $_GET['alert_id'] : null;
+        $this->data['alert_id'] = isset($_GET['alert_id']) ? ($_GET['alert_id'] !== '' ? $_GET['alert_id'] : 'empty')  : null;
+
+        $biller_id = $this->session->userdata('biller_id');
+        $this->data['users'] = $this->site->getStaff();
+        $this->data['products'] = $this->site->getProducts();
+        $this->data['warehouses'] = $this->site->getAllWarehouses();
+        $this->data['billers'] = $this->site->getAllCompanies('biller');
+        $this->data['user_billers'] = $this->site->getCompanyByID($biller_id);
+        $this->data['drivers']  = $this->site->getDriver();
+     
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => '#', 'page' => lang('renew')]];
+        $meta = ['page_title' => lang('renew'), 'bc' => $bc];
+        $this->page_construct('sales/renew', $meta, $this->data);
+        
+    }
+    public function getMaintenaceInvoice($warehouse_id = null){
+        $this->bpas->checkPermissions('index');
+        if ($warehouse_id) {
+            $warehouse_ids = explode('-', $warehouse_id);
+        }
+        $user_query     = $this->input->get('user') ? $this->input->get('user') : null;
+        $customer       = $this->input->get('customer') ? $this->input->get('customer') : null;
+        $biller         = $this->input->get('biller') ? $this->input->get('biller') : null;
+        $reference_no   = $this->input->get('reference_no') ? $this->input->get('reference_no') : NULL;
+        $saleman_by     = $this->input->get('saleman_by') ? $this->input->get('saleman_by') : null;
+        $product_id     = $this->input->get('product_id') ? $this->input->get('product_id') : null;
+        $warehouse      = $this->input->get('warehouse') ? $this->input->get('warehouse') : null;
+        $delivered_by   = $this->input->get('delivered_by') ? $this->input->get('delivered_by') : null;
+        $payment_status = $this->input->get('payment_status') ? $this->input->get('payment_status') : NULL;
+        $start_date     = $this->input->get('start_date') ? $this->input->get('start_date') : null;
+        $end_date       = $this->input->get('end_date') ? $this->input->get('end_date') : null;
+
+        $a              = $this->input->get('a') ? $this->input->get('a') : null;
+
+        if ($start_date) {
+            $start_date = $this->bpas->fld($start_date . ' 00:00:00');
+            $end_date   = $this->bpas->fld($end_date . ' 23:59:00');
+        }
+        $view_logo        = anchor('admin/sales/modal_view/$1/logo', '<i class="fa fa-money"></i> ' . lang('print_with_logo'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $detail_link          = anchor('admin/sales/view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('sale_details'));
+        $issue_invoice        = anchor('admin/sales/view/$1/issue_inv', '<i class="fa fa-file-text-o"></i> ' . lang('issue_invoice'));
+        $view_ticket          = anchor('admin/sales/view_ticket/$1', '<i class="fa fa-file-text-o"></i> ' . lang('view_ticket'));
+        $dental_invoice_link  = anchor('admin/sales/dental_clinic/$1', '<i class="fa fa-file-text-o"></i> ' . lang('invoice_dental_clinic'));
+        $add_draw_link        = anchor('admin/sales/add_draw/$1', '<i class="fa fa-pencil"></i> ' . lang('add_draw'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+
+        $return_detail_link   = anchor('admin/sales/return_view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('return_sale') . ' ' . lang('details'));
+        $duplicate_link       = anchor('admin/sales/add?sale_id=$1', '<i class="fa fa-plus-circle"></i> ' . lang('duplicate_sale'));
+        $payments_link        = anchor('admin/sales/payments/$1', '<i class="fa fa-money"></i> ' . lang('view_payments'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_payment_link     = anchor('admin/sales/add_payment/$1', '<i class="fa fa-money"></i> ' . lang('add_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+
+        $down_payments_link        = anchor('admin/sales/view_down_payments/$1', '<i class="fa fa-money"></i> ' . lang('view_down_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_Downpayment_link     = anchor('admin/sales/add_downpayment/$1', '<i class="fa fa-money"></i> ' . lang('down_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+
+        $packagink_link       = anchor('admin/sales/packaging/$1', '<i class="fa fa-archive"></i> ' . lang('packaging'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_delivery_link    = anchor('admin/sales/add_delivery/$1', '<i class="fa fa-truck"></i> ' . lang('add_delivery'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $email_link           = anchor('admin/sales/email/$1', '<i class="fa fa-envelope"></i> ' . lang('email_sale'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $edit_link            = anchor('admin/sales/edit/$1', '<i class="fa fa-edit"></i> ' . lang('edit_sale'), 'class="sledit"');
+        $pdf_link             = anchor('admin/sales/pdf/$1', '<i class="fa fa-file-pdf-o"></i> ' . lang('download_pdf'));
+        $return_link          = anchor('admin/sales/return_sale/$1', '<i class="fa fa-angle-double-left"></i> ' . lang('return_sale'));
+        $add_warranty_link    = anchor('admin/sales/add_maintenance/$1', '<i class="fa fa-money"></i> ' . lang('add_maintenance'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $delete_link          = "<a href='#' class='po' title='<b>" . lang('delete_sale') . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_sale') . '</a>';
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+        <ul class="dropdown-menu pull-right" role="menu">
+            <li>' . $detail_link . '</li>
+            <li>' . $issue_invoice . '</li>
+            <li>' . $view_logo . '</li>';
+            if($this->Settings->module_clinic){
+            $action .= '   
+                <li>' . $dental_invoice_link . '</li>
+                <li>' . $add_draw_link . '</li>';
+            }
+            if($this->Settings->module_hotel_apartment){
+                $action .= '<li>' . $view_ticket . '</li>';
+            }
+            $action .= '
+                <li>' . $duplicate_link . '</li>
+                <li>' . $payments_link . '</li>
+                <li>' . $add_payment_link . '</li>
+                <li>' . $packagink_link . '</li>
+                <li>' . $add_delivery_link . '</li>
+                <li>' . $down_payments_link . '</li>
+                <li>' . $add_Downpayment_link . '</li>
+                <li class="edit">' . $edit_link . '</li>
+                <li>' . $pdf_link . '</li>
+                <li>' . $return_link . '</li>
+                <li>' . $add_warranty_link . '</li>
+                <li class="delete">' . $delete_link . '</li>
+        </ul>
+
+        </div></div>';
+
+
+        $this->load->library('datatables');
+        $this->datatables
+        ->select("{$this->db->dbprefix('sales')}.id as id, 
+            DATE_FORMAT({$this->db->dbprefix('sales')}.date, '%Y-%m-%d %T') as date,
+            project_name,
+            CONCAT({$this->db->dbprefix('users')}.first_name, ' ', {$this->db->dbprefix('users')}.last_name) as saleman_by,
+            {$this->db->dbprefix('sales')}.reference_no, 
+            {$this->db->dbprefix('sales')}.biller, 
+            {$this->db->dbprefix('sales')}.customer, 
+            {$this->db->dbprefix('sales')}.sale_status, 
+            {$this->db->dbprefix('sales')}.grand_total, 
+            {$this->db->dbprefix('sales')}.paid, 
+            ({$this->db->dbprefix('sales')}.grand_total - {$this->db->dbprefix('sales')}.paid) as balance,
+            {$this->db->dbprefix('sales')}.payment_status, 
+         
+            {$this->db->dbprefix('sales')}.return_id")
+        ->join('projects', 'sales.project_id = projects.project_id', 'left')
+        ->join('sales_order', 'sales.so_id = sales_order.id', 'left')
+        ->join('users', 'sales.saleman_by = users.id', 'left')
+   
+        ->order_by('sales.id', 'desc')
+        ->from('sales')
+        ->where('sales.paid',0);
+        $this->datatables->where('sales.module_type','inventory');
+        $this->datatables->where('sales.hide', 1);
+        if ($warehouse_id) {
+            $this->datatables->where('sales.warehouse_id', $warehouse_id);
+        }
+        if (!$this->Customer && !$this->Supplier && !$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where_in("FIND_IN_SET(bpas_sales.warehouse_id, '" . $this->session->userdata('warehouse_id') . "')");
+            $this->datatables->where("FIND_IN_SET(bpas_sales.created_by, '" . $this->session->userdata('user_id') . "')");
+        }
+        if ($this->Customer) {
+            $this->datatables->where('projects.customer_id','bpas_projects.customer_id');
+        }
+        if ($this->input->get('shop') == 'yes') {
+            $this->datatables->where('shop', 1);
+        } elseif ($this->input->get('shop') == 'no') {
+            $this->datatables->where('shop !=', 1);
+        }
+        /*
+        if ($this->input->get('delivery') == 'no') {
+            $this->datatables->join('deliveries', 'deliveries.sale_id=sales.id', 'left')
+            ->where('sales.sale_status', 'completed')->where('sales.payment_status', 'paid')
+            ->where("({$this->db->dbprefix('deliveries')}.status != 'delivered' OR {$this->db->dbprefix('deliveries')}.status IS NULL)", null);
+        }*/
+        if ($this->input->get('attachment') == 'yes') {
+            $this->datatables->where('payment_status !=', 'paid')->where('attachment !=', null);
+        }
+
+        if ($user_query) {
+            $this->datatables->where('sales.created_by', $user_query);
+        }
+        if ($payment_status) {
+            $get_status = explode('_', $payment_status);
+            $this->datatables->where_in('sales.payment_status', $get_status);
+        }
+        if ($reference_no) {
+            $this->datatables->where('sales.reference_no', $reference_no);
+        }
+        // if ($product_id) {
+        //     $this->datatables->where('sales.product_id', $product_id);
+        // }
+        if ($biller) {
+            $this->datatables->where('sales.biller_id', $biller);
+        }
+        if ($customer) {
+            $this->datatables->where('sales.customer_id', $customer);
+        }
+        if ($saleman_by) {
+            $this->datatables->where('sales.saleman_by', $saleman_by);
+        }
+        if ($warehouse) {
+            $this->datatables->where('sales.warehouse_id', $warehouse);
+        }
+
+        if ($a || $a == 'empty') {
+            $alert_ids = explode('-', $a);
+            $alert_id  = $a;
+
+            if (count($alert_ids) > 1) {
+                // $this->datatables->where('sales.payment_term <>', 0);
+                // $this->datatables->where('DATE_SUB(bpas_sales.date, INTERVAL 1 DAY) <= CURDATE()');
+                $this->datatables->where_in('sales.id', $alert_ids);
+            } else {
+                // $this->datatables->where('sales.payment_term <>', 0);
+                // $this->datatables->where('DATE_SUB(bpas_sales.date, INTERVAL 1 DAY) <= CURDATE()');
+                $this->datatables->where('sales.id', $alert_id);
+            }
+        }
+
+        if ($start_date) {
+            $this->datatables->where($this->db->dbprefix('sales') . '.date BETWEEN "' . $start_date . '" and "' . $end_date . '"');
+        }
+        $this->datatables->where($this->db->dbprefix('sales') . '.pos !=', 1); // ->where('sale_status !=', 'returned');
+        $this->datatables->add_column('Actions', $action, 'id');
+        echo $this->datatables->generate();
+    }
+    
+    public function add_request_edit_sale($id = null)
+    {
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $inv = $this->sales_model->getInvoiceByID($id);
+        if ($inv->sale_status == 'returned' || $inv->return_id || $inv->return_sale_ref) {
+            $this->session->set_flashdata('error', lang('sale_x_action'));
+            $this->bpas->md();
+        } 
+        if ($this->Owner || $this->Admin || $this->GP['sales-edit']) {
+            $this->session->set_flashdata('error', lang('sale_xr_action'));
+            $this->bpas->md();
+        } 
+        if (!$this->session->userdata('edit_right')) {
+            $this->bpas->view_rights($inv->saleman_by);
+        }
+        
+        $this->form_validation->set_rules('sale_reference_no', lang('sale_reference_no'), 'required');
+        if ($this->form_validation->run() == true) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+                $data = [
+                    'date'              => $date,
+                    'sale_id'           => $this->input->post('sale_id'),
+                    'reference_no'      => $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('esq'),
+                    'sale_reference_no' => $this->input->post('sale_reference_no'),
+                    'status'            => $this->input->post('status'),
+                    'noted'             => $this->bpas->clear_tags($this->input->post('noted')),
+                    'created_by'        => $this->session->userdata('user_id'),
+                    'biller_id'         => $inv->biller_id,
+                    'warehouse_id'      => $inv->warehouse_id,
+                ];
+                if ($_FILES['document']['size'] > 0) {
+                    $this->load->library('upload');
+                    $config['upload_path']   = $this->upload_path;
+                    $config['allowed_types'] = $this->digital_file_types;
+                    $config['max_size']      = $this->allowed_file_size;
+                    $config['overwrite']     = false;
+                    $config['encrypt_name']  = true;
+                    $this->upload->initialize($config);
+                    if (!$this->upload->do_upload('document')) {
+                        $error = $this->upload->display_errors();
+                        $this->session->set_flashdata('error', $error);
+                        redirect($_SERVER['HTTP_REFERER']);
+                    }
+                    $photo                   = $this->upload->file_name;
+                    $data['attachment'] = $photo;
+                }
+            } elseif ($this->input->post('add_request')) { 
+                $this->session->set_flashdata('error', validation_errors());
+                redirect($_SERVER['HTTP_REFERER']);
+            } 
+            if ($this->form_validation->run() == true && $this->sales_model->addEditSaleRequest($data)) {
+                $this->session->set_flashdata('message', lang('edit_sale_request_added'));
+                admin_redirect('sales');
+            } else {
+                $this->data['error']           = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+                $this->data['customer']        = $this->site->getCompanyByID($inv->customer_id);
+                $this->data['address']         = $this->site->getAddressByID($inv->address_id);
+                $this->data['inv']             = $inv;
+                $this->data['reference_no']    = $this->site->getReference('esq');
+                $this->data['modal_js']        = $this->site->modal_js();
+                $this->data['drivers']         = $this->site->getDriver();
+                $this->load->view($this->theme . 'sales/request_edit_sale', $this->data);
+            }
+    }
+    public function update_edit_sale_status($id = null)
+    {
+        $inv  = $this->sales_model->getEditSaleRequestByID($id); 
+        $sin = $this->sales_model->getInvoiceByID($inv->sale_id);
+        if (!$sin || $sin->sale_status == 'returned' || $sin->return_id || $sin->return_sale_ref) {
+            $this->session->set_flashdata('error', lang('sale_x_action'));
+            $this->bpas->md();
+        }
+        $this->form_validation->set_rules('status', lang('status'), 'required'); 
+            if ($this->form_validation->run() == true) {
+                $data = [
+                    'updated_date'      => date('Y-m-d H:i:s'),
+                    'status'            => $this->input->post('status'),
+                    'note'              => $this->input->post('note'),
+                    'updated_by'        => $this->session->userdata('user_id'),
+                ];
+               
+            } elseif ($this->input->post('submit_request')) { 
+                $this->session->set_flashdata('error', validation_errors());
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+             if ($this->form_validation->run() == true && $this->sales_model->updateEditSaleRequest($id, $data)) {
+                $this->session->set_flashdata('message', lang('this_request_update_to').' '.lang($this->input->post('status')));
+                admin_redirect('sales');
+            } else {
+                $this->data['inv']      = $inv; 
+                $this->data['created_by'] = $this->site->getUserByID($inv->created_by);
+                $this->data['modal_js'] = $this->site->modal_js();
+                $this->load->view($this->theme . 'sales/update_edit_sale_status', $this->data);
+        }
+    }
+    public function pending_alert($id = null)
+    {
+        $this->session->set_flashdata('message', lang('this_inv_not_yet_approved'));
+        redirect($_SERVER['HTTP_REFERER']);
+    }
+    public function remove_rejected($id = null)
+    {
+        $inv  = $this->sales_model->getEditSaleRequestByID($id);
+        $this->form_validation->set_rules('status', lang('status'), 'required'); 
+        if($this->form_validation->run() == true){ 
+            $data = [
+                'status'  =>$this->input->post('status'),
+                'noted'    => $this->input->post('note'),
+                'active'  => ($this->input->post('status') == 'rejected') ? 0 : 1,
+            ]; 
+            if ($this->sales_model->removeRejected($id, $data)) {
+                $this->session->set_flashdata('message', lang('remove_rejected_alert'));
+                redirect($_SERVER['HTTP_REFERER']);
+            }else{
+                $this->session->set_flashdata('error', lang('failed'));
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+        } else {
+            if ($this->input->post('submit_request')) { 
+                $this->session->set_flashdata('error', validation_errors());
+                redirect($_SERVER['HTTP_REFERER']);
+            }
+            $this->data['inv']      = $inv; 
+            $this->data['created_by'] = $this->site->getUserByID($inv->created_by);
+            $this->data['modal_js'] = $this->site->modal_js();
+            $this->load->view($this->theme . 'sales/remove_rejected', $this->data);
+        }
+    }
+    public function credit_note($biller_id = null)
+    {
+        if(!isset($this->GP['sales-deliveries']) && (!$this->Admin && !$this->Owner)){
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }  
+
+        $user = $this->site->getUser($this->session->userdata('user_id'));
+        if ($this->Settings->multi_biller) {
+            $count = $user->multi_biller ? explode(',', $user->multi_biller) : null;         
+        } else {
+            $count = $user->biller_id ? ((array) $user->biller_id) : null;
+        }
+        if ($this->Owner || $this->Admin || empty($count)) {
+            $this->data['billers']   = $this->site->getAllCompanies('biller');
+            $this->data['biller_id'] = $biller_id;
+            $this->data['biller']    = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        } else {
+            if (count($count) > 1) {
+                $this->data['billers']   = $this->site->getAllCompanies('biller');
+            } else {
+                $this->data['billers']   = null;
+            }
+            $this->data['count_billers'] = $count;
+            $this->data['user_biller']   = (isset($count) && count($count) == 1) ? $this->site->getCompanyByID($this->session->userdata('biller_id')) : null;
+            $this->data['biller_id']     = $biller_id;
+            $this->data['biller']        = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        }
+
+        $data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+        $bc   = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sale')), array('link' => '#', 'page' => lang('credit_note')));
+        $meta = array('page_title' => lang('credit_note'), 'bc' => $bc);
+        $this->page_construct('sales/credit_note', $meta, $this->data);
+    }
+    public function getCreditNote($biller_id = null)
+    {
+        if(!isset($this->GP['sales-deliveries']) && (!$this->Admin && !$this->Owner)){
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        if ((!$this->Owner && !$this->Admin) && !$biller_id) {
+            $user = $this->site->getUser($this->session->userdata('user_id'));
+            if ($this->Settings->multi_biller) {
+                $biller_id = $user->multi_biller ? explode(',', $user->multi_biller) : null;         
+            } else {
+                $biller_id = $user->biller_id ? ((array) $user->biller_id) : null;
+            }
+        }  
+        $detail_link      = anchor('admin/sales/view_credit_note/$1', '<i class="fa fa-file-text-o"></i> ' . lang('credit_note_details'), 'data-toggle="modal" data-target="#myModal"');
+        $pdf_link         = anchor('admin/sales/pdf_delivery/$1', '<i class="fa fa-file-pdf-o"></i> ' . lang('download_pdf'));
+        $edit_link            = anchor('admin/sales/edit_credit_note/$1', '<i class="fa fa-edit"></i> ' . lang('edit_credit_note'), 'class="sledit"');
+        $delete_link      = "<a href='#' class='po delete_credit_note' title='<b>" . lang("delete_credit_note") . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete_credit_note/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_credit_note') . "</a>";
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+                . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+                . lang('actions') . ' <span class="caret"></span></button>
+            <ul class="dropdown-menu pull-right" role="menu">
+                <li>' . $detail_link . '</li>
+                <li>' . $edit_link . '</li>
+    
+                <li>' . $delete_link . '</li>
+            </ul>
+        </div></div>';
+
+        $this->load->library('datatables');
+        $this->datatables
+            ->select("credit_note.id as id, credit_note.date, reference_no, sale_reference_no, companies.name,credit_note.customer,credit_note.attachment")
+            ->from('credit_note')
+            ->join('companies', 'companies.id=credit_note.biller_id', 'left')
+            ->group_by('credit_note.id');
+        
+        if ($this->input->get("status")){
+            $this->datatables->where("credit_note.status", trim($this->input->get("status")));
+        }
+        if ((!$this->Owner && !$this->Admin) && !$this->session->userdata('view_right')) {
+            $this->datatables->where('credit_note.created_by', $this->session->userdata('user_id'));
+        }
+        if ($biller_id) {
+            $this->datatables->where_in('credit_note.biller_id', $biller_id);
+        }           
+        
+        $this->datatables->add_column("Actions", $action, "id");
+        echo $this->datatables->generate();
+    }
+    
+    public function add_credit_note($inv_id = null)
+    {
+        if(!isset($this->GP['sales-credit_note']) && (!$this->Admin && !$this->Owner)){
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        if ($inv_id) {
+            if($this->sales_model->checkCreditNote($inv_id)){
+                $this->session->set_flashdata('error', lang('sale_already_created_credit_note_completed'));
+                admin_redirect('sales');
+            }
+        }
+        if($inv_id){
+            $sale = $this->sales_model->getInvoiceByID($inv_id);
+            $project_id = $sale->project_id;
+            $warehouse_id = $sale->warehouse_id;
+        }
+        $this->form_validation->set_message('is_natural_no_zero', $this->lang->line("no_zero_required"));
+        $this->form_validation->set_rules('customer', $this->lang->line("customer"), 'required');
+        if ($this->form_validation->run() == true) {
+            if ($this->Owner || $this->Admin  || $this->GP['sales-date_delivery']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = ($this->Settings->date_with_time==0 ? date('Y-m-d') : date('Y-m-d H:i:s'));
+            }
+            $inv_id = $this->input->post('sale_id');
+            if($inv_id) {
+                $sale = $this->sales_model->getInvoiceByID($inv_id);
+                $project_id = $sale->project_id;
+            }
+            $warehouse_id     = $sale->warehouse_id ? $sale->warehouse_id : $sale_order->warehouse_id;
+            $customer_id      = $this->input->post('customer');
+            $note             = $this->input->post('note');
+            $customer_details = $this->site->getCompanyByID($customer_id);
+            $customer         = $customer_details->company != '-' ? $customer_details->company : $customer_details->name;
+            $biller_id        = $sale->biller_id ? $sale->biller_id : $sale_order->biller_id;
+            $biller_details   = $this->site->getCompanyByID($biller_id);
+            $biller           = $biller_details->company != '-' ? $biller_details->company : $biller_details->name;
+            $reference_no     = $this->input->post('do_reference_no') ? $this->input->post('do_reference_no') : $this->site->getReference('do', $biller_id);
+            $i = isset($_POST['product_code']) ? sizeof($_POST['product_code']) : 0;
+            $percentage = '%';
+            $product_discount=0;$product_tax=0;
+            for ($r = 0; $r < $i; $r++) {
+                $item_id   = $_POST['product_id'][$r];
+                $item_type = $_POST['product_type'][$r];
+                $item_code = $_POST['product_code'][$r];
+                $item_name = $_POST['product_name'][$r];
+                $item_option = isset($_POST['product_option'][$r]) && $_POST['product_option'][$r] != 'false' ? $_POST['product_option'][$r] : null;
+                $real_unit_price = $this->bpas->formatDecimal($_POST['real_unit_price'][$r]);
+                $unit_price = $this->bpas->formatDecimal($_POST['unit_price'][$r]);
+                $item_unit_quantity = $_POST['quantity'][$r];
+                $item_tax_rate = isset($_POST['product_tax'][$r]) ? $_POST['product_tax'][$r] : null;
+                $item_discount = isset($_POST['product_discount'][$r]) ? $_POST['product_discount'][$r] : null;
+                $item_unit = $_POST['unit'][$r];
+                $item_quantity = $_POST['base_quantity'][$r];
+                $parent_id = $_POST['parent_id'][$r];
+                $item_serial = isset($_POST['serial_no'][$r]) ? $_POST['serial_no'][$r] : '';
+                $item_sale_item_id = $_POST['sale_item_id'][$r];
+                $item_reason = isset($_POST['reason'][$r]) ? $_POST['reason'][$r] : null;
+                if(isset($_POST['expired_data'][$r]) && $_POST['expired_data'][$r] && $_POST['expired_data'][$r] != '00/00/0000'){
+                    $expired_data = $this->bpas->fsd($_POST['expired_data'][$r]);
+                } else {
+                    $expired_data = null;
+                }
+                if (isset($item_code)) {
+                    $product_details = $item_type != 'manual' ? $this->site->getProductByCode($item_code) : null;
+                    $pr_discount = 0;
+                    if (isset($item_discount)) {
+                        $discount = $item_discount;
+                        $dpos = strpos($discount, $percentage);
+                        if ($dpos !== false) {
+                            $pds = explode("%", $discount);
+                            $pr_discount = $this->bpas->formatDecimal(((($this->bpas->formatDecimal($unit_price)) * (Float) ($pds[0])) / 100), 4);
+                        } else {
+                            $pr_discount = $this->bpas->formatDecimal($discount);
+                        }
+                    }
+                    $unit_price = $this->bpas->formatDecimal($unit_price - $pr_discount);
+                    $item_net_price = $unit_price;
+                    $pr_item_discount = $this->bpas->formatDecimal($pr_discount * $item_unit_quantity);
+                    $product_discount += $pr_item_discount;
+                    $pr_tax = 0;
+                    $pr_item_tax = 0;
+                    $item_tax = 0;
+                    $tax = "";
+                    if (isset($item_tax_rate) && $item_tax_rate != 0) {
+                        $pr_tax = $item_tax_rate;
+                        $tax_details = $this->site->getTaxRateByID($pr_tax);
+                        if ($tax_details->type == 1 && $tax_details->rate != 0) {
+                            if ($product_details && $product_details->tax_method == 1) {
+                                $item_tax = $this->bpas->formatDecimal((($unit_price) * $tax_details->rate) / 100, 4);
+                                $tax = $tax_details->rate . "%";
+                            } else {
+                                $item_tax = $this->bpas->formatDecimal((($unit_price) * $tax_details->rate) / (100 + $tax_details->rate), 4);
+                                $tax = $tax_details->rate . "%";
+                                $item_net_price = $unit_price - $item_tax;
+                            }
+                        } elseif ($tax_details->type == 2) {
+                            if ($product_details && $product_details->tax_method == 1) {
+                                $item_tax = $this->bpas->formatDecimal((($unit_price) * $tax_details->rate) / 100, 4);
+                                $tax = $tax_details->rate . "%";
+                            } else {
+                                $item_tax = $this->bpas->formatDecimal((($unit_price) * $tax_details->rate) / (100 + $tax_details->rate), 4);
+                                $tax = $tax_details->rate . "%";
+                                $item_net_price = $unit_price - $item_tax;
+                            }
+                            $item_tax = $this->bpas->formatDecimal($tax_details->rate);
+                            $tax = $tax_details->rate;
+                        }
+                        $pr_item_tax = $this->bpas->formatDecimal($item_tax * $item_unit_quantity, 4);
+                    }
+                    $product_tax += $pr_item_tax;
+                    $subtotal = (($item_net_price * $item_unit_quantity) + $pr_item_tax);
+                    $unit     = $this->site->getProductBaseUnit($item_unit);
+                    $products[] = array(
+                        'product_id'     => $item_id,
+                        'product_code'   => $item_code,
+                        'product_name'   => $item_name,
+                        'product_type'   => $item_type,
+                        'option_id'      => $item_option,
+                        'net_unit_price' => $item_net_price,
+                        'unit_price'     => $this->bpas->formatDecimal($item_net_price + $item_tax),
+                        'quantity'       => $item_quantity,
+                        'product_unit_id'   => $item_unit,
+                        'product_unit_code' => $unit->code,
+                        'unit_quantity'     => $item_unit_quantity,
+                        'item_tax'          => $pr_item_tax,
+                        'tax_rate_id'       => $pr_tax,
+                        'tax'               => $tax,
+                        'discount'          => $item_discount,
+                        'item_discount'     => $pr_item_discount,
+                        'subtotal'          => $this->bpas->formatDecimal($subtotal),
+                        'real_unit_price'   => $real_unit_price,
+                        'expiry'            => $expired_data,
+                        'serial_no'         => $item_serial,
+                        'sale_item_id'      => $item_sale_item_id,
+                        'description'       => $item_reason
+                    );
+                }
+            }
+            $dlDetails = array(
+                'date' => $date,
+                'biller_id' => $biller_details->id,
+                'customer_id' => $customer_id,
+                'customer' => $customer,
+                'warehouse_id' => $warehouse_id,
+                'sale_id' => $sale->id,
+                'reference_no' => $reference_no,
+                'sale_reference_no' => $sale->reference_no,
+                'address' => $this->input->post('address'),
+                'note' => $this->bpas->clear_tags($this->input->post('note')),
+                'created_by' => $this->session->userdata('user_id'),
+            );
+            if($inv_id){
+                $dlDetails['status'] = "completed";
+            }           
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $dlDetails['attachment'] = $photo;
+            }
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->addCreditNote($dlDetails, $products)) {
+            $this->session->set_flashdata('message', $this->lang->line("delivery_added"));
+            $this->session->set_userdata('remove_dols', 1);
+            admin_redirect('sales/credit_note');
+        } else {
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            if($inv_id){
+               if ($inv_id > 0) {
+                    $this->data['inv'] = $this->sales_model->getInvoiceByID($inv_id);
+                    $inv_items = $this->sales_model->getAllInvoiceItemsWithCreditItems($inv_id);
+                }  
+                if($this->data['inv']->delivery_status == "completed"){
+                    $this->session->set_flashdata('error', $this->lang->line("delivery_already_added"));
+                    redirect($_SERVER['HTTP_REFERER']);
+                }
+                krsort($inv_items);
+                $c = rand(100000, 9999999);
+                foreach ($inv_items as $item) {
+                    $row = $this->site->getProductByID($item->product_id);
+                    if (!$row) {
+                        $row = json_decode('{}');
+                        $row->tax_method = 0;
+                    } else {
+                        unset($row->cost, $row->details, $row->product_details, $row->image, $row->barcode_symbology, $row->cf1, $row->cf2, $row->cf3, $row->cf4, $row->cf5, $row->cf6, $row->supplier1price, $row->supplier2price, $row->cfsupplier3price, $row->supplier4price, $row->supplier5price, $row->supplier1, $row->supplier2, $row->supplier3, $row->supplier4, $row->supplier5, $row->supplier1_part_no, $row->supplier2_part_no, $row->supplier3_part_no, $row->supplier4_part_no, $row->supplier5_part_no);
+                    }
+                    if($inv_id > 0){
+                        $row->quantity = ($item->quantity + $item->foc);
+                    }
+                    $row->balanace_qty = (($item->quantity + $item->foc) - $item->credit_items_quantity);
+                    $row->balance_unit_qty = $this->bpas->convertQty($item->product_id, $row->balanace_qty);
+                    $row->squantity = $this->bpas->convertQty($item->product_id, ($item->quantity + $item->foc));
+                    $row->dquantity = $this->bpas->convertQty($item->product_id, $item->credit_items_quantity);
+
+                    if($row->balanace_qty == 0) continue;
+                    $row->qty       = $row->balanace_qty;
+                    $convert_unit   = false;
+                    if($row->unit != $item->product_unit_id){
+                        $convert_unit = $this->bpas->convertUnit($item->product_id,$row->balanace_qty);
+                        $row->qty = $convert_unit['quantity'];
+                    }
+                    if(($row->balanace_qty - $item->foc) > 0){
+                        $row->sale_qty = $row->balanace_qty - $item->foc;
+                    } else {
+                        $row->sale_qty = 0;
+                    }
+
+                    $row->id         = $item->product_id;
+                    $row->sale_item_id = $item->sale_item_id;
+                    $row->code       = $item->product_code;
+                    $row->name       = $item->product_name;
+                    $row->type       = $item->product_type;
+                    $row->base_unit  = $row->unit;
+                    $row->base_unit_price = $row->price ? $row->price : $item->real_unit_price;
+                    $row->unit       = ($convert_unit ?  $convert_unit['unit_id'] : $row->unit);
+                    $row->discount   = $item->discount ? $item->discount : '0';
+                    $row->price      = $this->bpas->formatDecimal($item->net_unit_price + $this->bpas->formatDecimal($item->item_discount / $item->unit_quantity));
+                    $row->cost       = isset($row->cost)? $row->cost: 0;
+                    $row->unit_price = $row->tax_method ? $item->unit_price + $this->bpas->formatDecimal($item->item_discount / $item->unit_quantity) + $this->bpas->formatDecimal($item->item_tax / $item->unit_quantity) : $item->unit_price + ($item->item_discount / $item->unit_quantity);
+                    $row->real_unit_price = $item->real_unit_price;
+                    $row->tax_rate = $item->tax_rate_id;
+                    $row->serial   = $item->serial_no;
+                    $row->option   = $item->option_id;
+                    $row->swidth   = $item->width;
+                    $row->sheight  = $item->height;
+                    $row->square   = $item->square;
+                    $row->expiry   = $item->expiry;
+                    $row->description = '';
+                    $row->unit_name = ($this->site->getUnitByID($item->product_unit_id) ? $this->site->getUnitByID($item->product_unit_id)->name : '');
+                    if($inv_id > 0) {
+                        $options = $this->sales_model->getProductOptions($row->id, $item->warehouse_id);
+                    }
+                    if ($options) {
+                        $option_quantity = 0;
+                    }
+                    if($this->Settings->product_expiry == '1') {
+                        $s_expiry['quantity'] = $item->quantity;
+                        $s_expiry['expiry'] = $this->bpas->hrsd($item->expiry);
+                        $product_expiries[$this->bpas->hrsd($item->expiry)] = (object) $s_expiry;        
+                    } else {
+                        $product_expiries = false;
+                    }
+                    $combo_items = false;
+                    if ($row->type == 'combo') {
+                        if($inv_id > 0){
+                            $combo_items = $this->sales_model->getProductComboItems($row->id, $item->warehouse_id);
+                        }
+                    }
+                    $units    = !empty($row->base_unit) ? $this->site->getUnitsByBUID($row->base_unit) : null;
+                    $tax_rate = $this->site->getTaxRateByID($row->tax_rate);
+                    $ri       = $this->Settings->item_addition ? $row->id : $c;
+                    $pr[$ri]  = array('id' => $c, 'item_id' => $row->id, 'label' => $row->name . " (" . $row->code . ")",'row' => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 'units' => $units, 'options' => $options, 'product_expiries' => $product_expiries);
+                    $c++;
+                }
+                $this->data['inv_items'] = json_encode($pr);
+                $this->data['customer']  = $this->site->getCompanyByID($this->data['inv']->customer_id);
+                $this->data['sale_id']   = $inv_id;
+            }   
+            $this->data['billers']  = ($this->Owner || $this->Admin || !$this->session->userdata('biller_id')) ? $this->site->getAllCompanies('biller') : null;
+            $this->data['allUsers'] = $this->site->getAllUsers();
+            $this->data['drivers']  = $this->site->getDriver();
+            $this->data['sales']    = $this->site->getRefSales('completed');
+            $this->data['do_reference_no'] = $this->site->getReference('crn');
+
+            $bc   = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sale')), array('link' => admin_url('credit_note'), 'page' => lang('deliveries')), array('link' => '#', 'page' => lang('add_credit_note')));
+            $meta = array('page_title' => lang('add_credit_note'), 'bc' => $bc);
+            $this->page_construct('sales/add_credit_note', $meta, $this->data);
+        }
+    }
+
+    public function edit_credit_note($id = null)
+    {
+        $this->load->admin_model('companies_model');
+        if(!isset($this->GP['sales-credit_note']) && (!$this->Admin && !$this->Owner)){
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        $credit                = $this->sales_model->getCreditNoteByID($id);
+        $biller_details = $this->companies_model->getCompanyByID($credit->biller_id);
+        $this->form_validation->set_message('is_natural_no_zero', $this->lang->line("no_zero_required"));
+        $this->form_validation->set_rules('customer', $this->lang->line("customer"), 'required');
+        if ($this->form_validation->run() == true) {
+            $date             = $this->bpas->fld(trim($this->input->post('date')));
+            $credit_note_id   = $this->input->post('credit_note_id');
+            $customer_id      = $this->input->post('customer');
+            $customer_details = $this->site->getCompanyByID($customer_id);
+            $customer         = $customer_details->company != '-' ? $customer_details->company : $customer_details->name;
+            $percentage       = '%';
+            $product_discount = 0; $product_tax = 0;
+            $i = isset($_POST['product_code']) ? sizeof($_POST['product_code']) : 0;
+            for ($r = 0; $r < $i; $r++) {
+                $item_id = $_POST['product_id'][$r];
+                $item_type     = $_POST['product_type'][$r];
+                $item_code     = $_POST['product_code'][$r];
+                $item_name     = $_POST['product_name'][$r];
+                $item_option   = isset($_POST['product_option'][$r]) && $_POST['product_option'][$r] != 'false' ? $_POST['product_option'][$r] : null;
+                $item_reason   = isset($_POST['reason'][$r]) ? $_POST['reason'][$r] : null;
+                $real_unit_price = $this->bpas->formatDecimal($_POST['real_unit_price'][$r]);
+                $unit_price    = $this->bpas->formatDecimal($_POST['unit_price'][$r]);
+                $item_unit_quantity = $_POST['quantity'][$r];
+                $item_tax_rate = isset($_POST['product_tax'][$r]) ? $_POST['product_tax'][$r] : null;
+                $item_discount = isset($_POST['product_discount'][$r]) ? $_POST['product_discount'][$r] : null;
+                $item_unit     = $_POST['unit'][$r];
+                $item_quantity = $_POST['base_quantity'][$r];
+                $parent_id     = $_POST['parent_id'][$r];
+                if (isset($item_code)) {
+                    $product_details = $item_type != 'manual' ? $this->site->getProductByCode($item_code) : null;
+                    $pr_discount = 0;
+                    if (isset($item_discount)) {
+                        $discount = $item_discount;
+                        $dpos     = strpos($discount, $percentage);
+                        if ($dpos !== false) {
+                            $pds = explode("%", $discount);
+                            $pr_discount = $this->bpas->formatDecimal(((($this->bpas->formatDecimal($unit_price)) * (Float) ($pds[0])) / 100), 4);
+                        } else {
+                            $pr_discount = $this->bpas->formatDecimal($discount);
+                        }
+                    }
+                    $unit_price = $this->bpas->formatDecimal($unit_price - $pr_discount);
+                    $item_net_price = $unit_price;
+                    $pr_item_discount = $this->bpas->formatDecimal($pr_discount * $item_unit_quantity);
+                    $product_discount += $pr_item_discount;
+                    $pr_tax = 0;
+                    $pr_item_tax = 0;
+                    $item_tax = 0;
+                    $tax = "";
+                    if (isset($item_tax_rate) && $item_tax_rate != 0) {
+                        $pr_tax = $item_tax_rate;
+                        $tax_details = $this->site->getTaxRateByID($pr_tax);
+                        if ($tax_details->type == 1 && $tax_details->rate != 0) {
+                            if ($product_details && $product_details->tax_method == 1) {
+                                $item_tax = $this->bpas->formatDecimal((($unit_price) * $tax_details->rate) / 100, 4);
+                                $tax = $tax_details->rate . "%";
+                            } else {
+                                $item_tax = $this->bpas->formatDecimal((($unit_price) * $tax_details->rate) / (100 + $tax_details->rate), 4);
+                                $tax = $tax_details->rate . "%";
+                                $item_net_price = $unit_price - $item_tax;
+                            }
+                        } elseif ($tax_details->type == 2) {
+                            if ($product_details && $product_details->tax_method == 1) {
+                                $item_tax = $this->bpas->formatDecimal((($unit_price) * $tax_details->rate) / 100, 4);
+                                $tax = $tax_details->rate . "%";
+                            } else {
+                                $item_tax = $this->bpas->formatDecimal((($unit_price) * $tax_details->rate) / (100 + $tax_details->rate), 4);
+                                $tax = $tax_details->rate . "%";
+                                $item_net_price = $unit_price - $item_tax;
+                            }
+                            $item_tax = $this->bpas->formatDecimal($tax_details->rate);
+                            $tax = $tax_details->rate;
+                        }
+                        $pr_item_tax = $this->bpas->formatDecimal($item_tax * $item_unit_quantity, 4);
+                    }
+                    $product_tax += $pr_item_tax;
+                    $subtotal = (($item_net_price * $item_unit_quantity) + $pr_item_tax);
+                    $unit = $this->site->getUnitByID($item_unit);
+                    $products[] = array(
+                        'product_id' => $item_id,
+                        'product_code' => $item_code,
+                        'product_name' => $item_name,
+                        'product_type' => $item_type,
+                        'option_id' => $item_option,
+                        'net_unit_price' => $item_net_price,
+                        'unit_price' => $this->bpas->formatDecimal($item_net_price + $item_tax),
+                        'quantity' => $item_quantity,
+                        'product_unit_id' => $item_unit,
+                        'product_unit_code' => $unit->code,
+                        'unit_quantity'   => $item_unit_quantity,
+                        'item_tax' => $pr_item_tax,
+                        'tax_rate_id'     => $pr_tax,
+                        'tax'             => $tax,
+                        'discount'        => $item_discount,
+                        'item_discount'   => $pr_item_discount,
+                        'subtotal'        => $this->bpas->formatDecimal($subtotal),
+                        'real_unit_price' => $real_unit_price,
+                        'description'     => $item_reason
+                    );
+                }
+            }
+            $credit_notes = array(
+                'date'         => $date,
+                'customer_id'  => $customer_id,
+                'customer'     => $customer,
+                'biller_id'    => $biller_details->id,
+                'sale_id'      => $credit->sale_id,
+                'reference_no' => $this->input->post('reference_no'),
+                'sale_reference_no' => $credit->reference_no,
+                'address'      => $this->input->post('address'),
+                'note'         => $this->bpas->clear_tags($this->input->post('note')),
+                'created_by'   => $this->session->userdata('user_id'),
+            );       
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $credit_notes['attachment'] = $photo;
+            }
+            // $this->bpas->print_arrays($credit_note_id, $credit_notes, $products);
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->updateCreditNote($credit_note_id, $credit_notes, $products)) {
+            $this->session->set_flashdata('message', $this->lang->line("delivery_updated"));
+            admin_redirect('sales/credit_note');
+        } else {
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['inv'] = $this->sales_model->getCreditNoteByID($id);
+            $inv_items = $this->sales_model->getAllCreditNoteItems($id);
+
+            krsort($inv_items);
+            $c = rand(100000, 9999999);
+            foreach ($inv_items as $item) {
+                $row = $this->site->getProductByID($item->product_id);
+                if (!$row) {
+                    $row = json_decode('{}');
+                    $row->tax_method = 0;
+                } else {
+                    unset($row->details, $row->product_details, $row->cost, $row->supplier1price, $row->supplier2price, $row->supplier3price, $row->supplier4price, $row->supplier5price);
+                }
+                
+                $row->quantity = 0;
+                $row->id   = $item->product_id;
+                $row->code = $item->product_code;
+                $row->name = $item->product_name;
+                $row->type = $item->product_type;
+                $row->dquantity = $item->unit_quantity;
+                $row->quantity  = $item->quantity;
+                $row->qty = $item->unit_quantity;
+                $row->base_quantity = $item->quantity;
+                $row->base_unit = $row->unit ? $row->unit : $item->product_unit_id;
+                $row->base_unit_price = $row->price ? $row->price : $item->unit_price;
+                $row->unit     = $item->product_unit_id;
+                $row->discount = $item->discount ? $item->discount : '0';
+                $row->price    = $this->bpas->formatDecimal($item->net_unit_price + $this->bpas->formatDecimal($item->item_discount / $item->unit_quantity));
+                $row->unit_price = $row->tax_method ? $item->unit_price + $this->bpas->formatDecimal($item->item_discount / $item->unit_quantity) + $this->bpas->formatDecimal($item->item_tax / $item->unit_quantity) : $item->unit_price + ($item->item_discount / $item->unit_quantity);
+                $row->real_unit_price = $item->real_unit_price;
+                $row->tax_rate = $item->tax_rate_id;
+                $row->option   = $item->option_id;
+                $row->swidth   = $item->width;
+                $row->sheight  = $item->height;
+                $row->square   = $item->square;
+                $row->description = $item->description;
+                $options=false;
+                $options = $this->sales_model->getProductOptions($row->id, $item->warehouse_id);
+                if ($options) {
+                    $option_quantity = 0;
+                  
+                }
+                $combo_items = false;
+                if ($row->type == 'combo') {
+                    $combo_items = $this->sales_model->getProductComboItems($row->id, $item->warehouse_id);
+                    foreach ($combo_items as $combo_item) {
+                        $combo_item->quantity = $combo_item->qty * $item->quantity;
+                    }
+                }
+                $units    = !empty($row->base_unit) ? $this->site->getUnitsByBUID($row->base_unit) : null;
+                $tax_rate = $this->site->getTaxRateByID($row->tax_rate);
+                if($row->qty > 0){
+                    $ri = $this->Settings->item_addition ? $row->id : $c;
+                    $pr[$ri] = array('id' => $c, 'item_id' => $row->id, 'label' => $row->name . " (" . $row->code . ")", 'row' => $row, 'combo_items' => $combo_items, 'tax_rate' => $tax_rate, 'units' => $units, 'options' => $options);
+                    $c++;
+                }
+            }
+            $this->data['id'] = $id;
+            $this->data['inv_items'] = json_encode($pr);
+            $this->data['billers'] = ($this->Owner || $this->Admin || !$this->session->userdata('biller_id')) ? $this->site->getAllCompanies('biller') : null;
+            $this->data['credit']   = $credit;
+            $this->data['allUsers'] = $this->site->getAllUsers();
+            $this->data['tax_rates'] = $this->site->getAllTaxRates();
+            $this->data['paymentterms'] = $this->site->getAllPaymentTerms();
+            $this->data['warehouses'] = ($this->Owner || $this->Admin || !$this->session->userdata('biller_id')) ? $this->site->getAllWarehouses() : null;
+            $this->data['do_reference_no'] = $this->site->getReference('crn');
+            $this->data['customer'] = $this->companies_model->getCompanyByID($credit->customer_id);
+            $bc   = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sale')), array('link' => admin_url('credit_note'), 'page' => lang('credit_note')), array('link' => '#', 'page' => lang('edit_credit_note')));
+            $meta = array('page_title' => lang('edit_credit_note'), 'bc' => $bc);
+            $this->page_construct('sales/edit_credit_note', $meta, $this->data);
+        }
+    }
+
+    public function delete_credit_note($id = null)
+    {
+        if(!isset($this->GP['sales-credit_note']) && (!$this->Admin && !$this->Owner)){
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        if ($this->sales_model->deleteCreditNote($id)) {
+            $this->bpas->send_json(['error' => 0, 'msg' => lang('credit_note_deleted')]);
+        }
+    }
+
+    public function view_credit_note($id = null)
+    {
+        $this->load->admin_model('companies_model');
+        if(!isset($this->GP['sales-credit_note']) && (!$this->Admin && !$this->Owner)){
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+
+        $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+        $credit = $this->sales_model->getCreditNoteByID($id);
+       
+        $sale   = $this->sales_model->getInvoiceByID($credit->sale_id);
+        if (!$sale) {
+            $this->session->set_flashdata('error', lang('sale_not_found'));
+            $this->bpas->md();
+        }
+        $this->data['credit']   = $credit;
+        $this->data['inv']   = $sale;
+        $this->data['sold_by']  = $this->site->getsaleman($sale->saleman_by);
+        $this->data['created_by']  = $this->site->getUser($credit->created_by);
+        $this->data['islogo']      = 1;                   
+        $this->data['return_sale'] = null;
+        $this->data['customer'] = $this->companies_model->getCompanyByID($credit->customer_id);
+        $this->data['biller']     = $this->site->getCompanyByID($sale->biller_id);
+        $this->data['rows']       = $this->sales_model->getAllCreditNoteItems($id);
+        $this->data['user']       = $this->site->getUser($credit->created_by);
+        $this->data['page_title'] = lang('delivery_order');
+
+        $this->load->view($this->theme . 'sales/view_credit_note', $this->data);
+    }
+    public function consignments($warehouse_id = null, $biller_id = NULL)
+    {
+        $this->bpas->checkPermissions();
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $this->data['warehouses'] = $this->site->getWarehouses();
+        $this->data['warehouse'] = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+        $this->data['billers'] = $this->site->getBillers();
+        $this->data['biller'] = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('products'), 'page' => lang('inventory')), array('link' => '#', 'page' => lang('consignments')));
+        $meta = array('page_title' => lang('consignments'), 'bc' => $bc);
+        $this->page_construct('sales/consignments', $meta, $this->data);
+
+    }
+    public function getConsignments($warehouse_id = null, $biller_id = NULL)
+    {
+        $this->bpas->checkPermissions('consignments');
+        $create_sale = '';
+        if(($this->Admin || $this->Owner) || $this->GP['sales-add']){
+            $create_sale = anchor('admin/sales/add/?consignment_id=$1', '<i class="fa fa-plus-circle"></i> ' . lang('create_sale'), ' class="consignment-create_sale" ');
+        }
+        $edit_link = anchor('admin/sales/edit_consignment/$1', '<i class="fa fa-edit"></i> ' . lang('edit_consignment'), ' class="edit_consignment" ');
+        $view_return_link = anchor('admin/sales/view_consignment_return/$1', '<i class="fa fa-file-text-o"></i>' . lang('view_consignment_return'), 'data-toggle="modal" data-backdrop="static" data-keyboard="false" data-target="#myModal"');
+        $return_link = anchor('admin/sales/return_consignment/$1', '<i class="fa fa-angle-double-left"></i> ' . lang('return_consignment'));
+        $delete_link = "<a href='#' class='po delete_consignment' title='<b>" . $this->lang->line("delete_consignment") . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger' href='" . admin_url('sales/delete_consignment/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_consignment') . "</a>";
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+                    <ul class="dropdown-menu pull-right" role="menu">
+                        <li>' . $view_return_link . '</li>
+                        <li>' . $return_link . '</li>
+                        <li>' . $create_sale . '</li>
+                        <li>' . $edit_link . '</li>
+                        <li>' . $delete_link . '</li>
+                    </ul>
+                </div></div>';
+       
+        $this->load->library('datatables');
+
+        $this->datatables
+            ->select("id, date, reference_no, customer, grand_total, status, attachment")
+            ->where("consignments.status !=",'returned')
+            ->from("consignments");
+        if ($warehouse_id) {
+            $this->datatables->where('consignments.warehouse_id', $warehouse_id);
+        }
+        if ($biller_id) {
+            $this->datatables->where('consignments.biller_id', $biller_id);
+        }   
+        if (!$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where('created_by', $this->session->userdata('user_id'));
+        }
+        if (!$this->Owner && !$this->Admin && $this->session->userdata('biller_id')) { 
+            $this->datatables->where('consignments.biller_id', $this->session->userdata('biller_id'));
+        }
+        if (!$this->Owner && !$this->Admin && $this->session->userdata('warehouse_id')) { 
+            $this->datatables->where_in('consignments.warehouse_id', json_decode($this->session->userdata('warehouse_id')));
+        }
+        $this->datatables->add_column("Actions", $action, "id");
+        echo $this->datatables->generate();
+    }
+    
+    public function add_consignment()
+    {
+        $this->bpas->checkPermissions();
+        $this->form_validation->set_message('is_natural_no_zero', $this->lang->line("no_zero_required"));
+        $this->form_validation->set_rules('customer', $this->lang->line("customer"), 'required');
+        if ($this->form_validation->run() == true) {
+            $biller_id = $this->input->post('biller');
+            $project_id = $this->input->post('project');
+            $reference = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('csm',$biller_id);
+            if ($this->Owner || $this->Admin || $this->bpas->GP['consignments-date'] ) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = ($this->Settings->date_with_time==0 ? date('Y-m-d') : date('Y-m-d H:i:s'));
+            }
+            $valid_day = $this->input->post('valid_day');
+            $warehouse_id = $this->input->post('warehouse');
+            $customer_id = $this->input->post('customer');
+            $status = 'pending';
+            $customer_details = $this->site->getCompanyByID($customer_id);
+            $customer = $customer_details->company != '-'  ? $customer_details->company : $customer_details->name;
+            $biller_details = $this->site->getCompanyByID($biller_id);
+            $biller = $biller_details->company != '-' ? $biller_details->company : $biller_details->name;
+            $note = $this->bpas->clear_tags($this->input->post('note'));
+            $total = 0;
+            $i = isset($_POST['product_code']) ? sizeof($_POST['product_code']) : 0;
+            $consignmentAcc = $this->site->getAccountSettingByBiller($biller_id);
+            for ($r = 0; $r < $i; $r++) {
+                $item_id = $_POST['product_id'][$r];
+                $item_type = $_POST['product_type'][$r];
+                $item_code = $_POST['product_code'][$r];
+                $item_name = $_POST['product_name'][$r];
+                $item_comment = $_POST['product_comment'][$r];
+                $item_option = isset($_POST['product_option'][$r]) && $_POST['product_option'][$r] != 'false' ? $_POST['product_option'][$r] : null;
+                $real_unit_price = $this->bpas->formatDecimalRaw($_POST['real_unit_price'][$r]);
+                $unit_price = $this->bpas->formatDecimalRaw($_POST['unit_price'][$r]);
+                $item_unit_quantity = $_POST['quantity'][$r];
+                $item_unit = $_POST['product_unit'][$r];
+                $item_quantity = $_POST['product_base_quantity'][$r];
+                $item_serial = isset($_POST['serial'][$r]) ? $_POST['serial'][$r] : '';
+                if($_POST['expired_data'][$r] && $_POST['expired_data'][$r] != '00/00/0000'){
+                    $item_expiry = $this->bpas->fsd($_POST['expired_data'][$r]);
+                }else{
+                    $item_expiry = null;
+                }
+
+                if (isset($item_code) && isset($item_quantity)) {
+                    $product_details = $item_type != 'manual' ? $this->sales_model->getProductByCode($item_code) : null;
+                    $unit_price = $this->bpas->formatDecimalRaw($unit_price);
+                    $item_net_price = $unit_price;
+                    $pr_item_discount = $this->bpas->formatDecimalRaw($item_unit_quantity);
+                    $subtotal = ($item_net_price * $item_unit_quantity);
+                    $unit = $this->site->getProductUnit($product_details->id,$item_unit);
+                    
+                    if($this->Settings->module_account_method == '0'){
+                        $costs = $this->site->getFifoCost($product_details->id,$item_quantity,$stockmoves);
+                    }else if($this->Settings->module_account_method == '1'){
+                        $costs = $this->site->getLifoCost($product_details->id,$item_quantity,$stockmoves);
+                    }else if($this->Settings->module_account_method == '3'){
+                        $costs = $this->site->getProductMethod($product_details->id,$item_quantity,$stockmoves);
+                    }
+                    
+                    if($costs && $item_serial==''){
+                        $productAcc = $this->site->getProductAccByProductId($item_id);
+                        foreach($costs as $cost_item){
+                     
+                            if($this->Settings->module_account == 1){       
+                                $accTrans[] = array(
+                                    'transaction' => 'Consignment',
+                                    'tran_date' => $date,
+                                    'reference' => $reference,
+                                    'account' => $productAcc->stock_account,
+                                    'amount' => -($cost_item['cost'] * abs($cost_item['quantity'])),
+                                    'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$cost_item['quantity'].'#'.'Cost: '.$cost_item['cost'],
+                                    'description' => $note,
+                                    'biller_id' => $biller_id,
+                                    'project_id' => $project_id,
+                                    'user_id' => $this->session->userdata('user_id'),
+                                    'customer_id' => $customer_id,
+                                );
+                                $accTrans[] = array(
+                                    'transaction' => 'Consignment',
+                                    'tran_date' => $date,
+                                    'reference' => $reference,
+                                    'account' => $consignmentAcc->consignment_acc,
+                                    'amount' => ($cost_item['cost'] * abs($cost_item['quantity'])),
+                                    'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$cost_item['quantity'].'#'.'Cost: '.$cost_item['cost'],
+                                    'description' => $note,
+                                    'biller_id' => $biller_id,
+                                    'project_id' => $project_id,
+                                    'user_id' => $this->session->userdata('user_id'),
+                                    'customer_id' => $customer_id,
+                                );
+                                
+                            }
+                        }
+                    }else{
+                        if($item_serial!=''){
+                            $serial_detail = $this->sales_model->getProductSerial($item_serial,$product_details->id,$warehouse_id);
+                            if($serial_detail){
+                                $product_details->cost = $serial_detail->cost;
+                            }
+                            
+                        }
+                      
+                        if($this->Settings->module_account == 1){       
+                            $productAcc = $this->site->getProductAccByProductId($product_details->id);
+                            $accTrans[] = array(
+                                'transaction' => 'Consignment',
+                                'tran_date' => $date,
+                                'reference' => $reference,
+                                'account' => $productAcc->stock_account,
+                                'amount' => -($product_details->cost * abs($item_quantity)),
+                                'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$item_quantity.'#'.'Cost: '.$product_details->cost,
+                                'description' => $note,
+                                'biller_id' => $biller_id,
+                                'project_id' => $project_id,
+                                'user_id' => $this->session->userdata('user_id'),
+                                'customer_id' => $customer_id,
+                            );
+                            $accTrans[] = array(
+                                'transaction' => 'Consignment',
+                                'tran_date' => $date,
+                                'reference' => $reference,
+                                'account' => $consignmentAcc->consignment_acc,
+                                'amount' => ($product_details->cost * abs($item_quantity)),
+                                'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$item_quantity.'#'.'Cost: '.$product_details->cost,
+                                'description' => $note,
+                                'biller_id' => $biller_id,
+                                'project_id' => $project_id,
+                                'user_id' => $this->session->userdata('user_id'),
+                                'customer_id' => $customer_id,
+                            );
+                            
+                        }
+                    }
+                    $products[] = array(
+                        'product_id' => $item_id,
+                        'product_code' => $item_code,
+                        'product_name' => $item_name,
+                        'product_type' => $item_type,
+                        'option_id' => $item_option,
+                        'net_unit_price' => $item_net_price,
+                        'unit_price' => $this->bpas->formatDecimalRaw($item_net_price),
+                        'quantity' => $item_quantity,
+                        'product_unit_id' => $item_unit,
+                        'product_unit_code' => $unit->code,
+                        'unit_quantity' => $item_unit_quantity,
+                        'warehouse_id' => $warehouse_id,
+                        'subtotal' => $this->bpas->formatDecimalRaw($subtotal),
+                        'real_unit_price' => $real_unit_price,
+                        'expiry' => $item_expiry,
+                        'serial_no' => $item_serial,
+                        'comment' => $item_comment
+                    );
+                    $total += $this->bpas->formatDecimalRaw($item_net_price * $item_unit_quantity);
+                }
+            }
+            if (empty($products)) {
+                $this->form_validation->set_rules('product', lang("order_items"), 'required');
+            } else {
+                krsort($products);
+            }
+            $grand_total = $this->bpas->formatDecimalRaw($total);
+            $data = array('date' => $date,
+                'reference_no' => $reference,
+                'customer_id' => $customer_id,
+                'customer' => $customer,
+                'biller_id' => $biller_id,
+                'biller' => $biller,
+                'project_id' => $project_id,
+                'warehouse_id' => $warehouse_id,
+                'note' => $note,
+                'total' => $total,
+                'grand_total' => $grand_total,
+                'valid_day' => $valid_day,
+                'status' => $status,
+                'created_by' => $this->session->userdata('user_id'),
+            );
+
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+            if($this->Settings->product_expiry == '1'  && $products){
+                $checkExpiry = $this->site->checkExpiry('', $products,'Consignment');
+                $stockmoves = $checkExpiry['expiry_stockmoves'];
+                $products = $checkExpiry['expiry_items'];
+            }
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->addConsignment($data, $products, $stockmoves, $accTrans)) {
+            $this->session->set_userdata('remove_csmls', 1);
+            $this->session->set_flashdata('message', $this->lang->line("consignment_added") ." ". $reference);
+            if($this->input->post('add_consignment_next')){
+                admin_redirect('sales/add_consignment');
+            }else{
+                admin_redirect('sales/consignments');
+            }
+        } else {
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['billers'] =  $this->site->getBillers();
+            $this->data['warehouses'] = $this->site->getWarehouses();
+            $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('products'), 'page' => lang('inventory')), array('link' => admin_url('products/consignments'), 'page' => lang('consignments')), array('link' => '#', 'page' => lang('add_consignment')));
+            $meta = array('page_title' => lang('add_consignment'), 'bc' => $bc);
+            $this->page_construct('sales/add_consignment', $meta, $this->data);
+        }
+    }
+    public function edit_consignment($id = false)
+    {
+        $this->bpas->checkPermissions();
+        $consignment = $this->sales_model->getConsignmentByID($id);
+        if($consignment->status == 'partial'){
+            $this->session->set_flashdata('error', lang("consignment_is_in_process"));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }else if($consignment->status == 'completed'){
+            $this->session->set_flashdata('error', lang("consignment_is_already_completed"));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        $this->form_validation->set_message('is_natural_no_zero', $this->lang->line("no_zero_required"));
+        $this->form_validation->set_rules('customer', $this->lang->line("customer"), 'required');
+        if ($this->form_validation->run() == true) {
+            $biller_id = $this->input->post('biller');
+            $project_id = $this->input->post('project');
+            $reference = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('csm',$biller_id);
+            if ($this->Owner || $this->Admin || $this->bpas->GP['consignments-date'] ) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = ($this->Settings->date_with_time==0 ? date('Y-m-d') : date('Y-m-d H:i:s'));
+            }
+            $valid_day = $this->input->post('valid_day');
+            $warehouse_id = $this->input->post('warehouse');
+            $customer_id = $this->input->post('customer');
+            $customer_details = $this->site->getCompanyByID($customer_id);
+            $customer = $customer_details->company != '-'  ? $customer_details->company : $customer_details->name;
+            $biller_details = $this->site->getCompanyByID($biller_id);
+            $biller = $biller_details->company != '-' ? $biller_details->company : $biller_details->name;
+            $note = $this->bpas->clear_tags($this->input->post('note'));
+            $total = 0;
+            $i = isset($_POST['product_code']) ? sizeof($_POST['product_code']) : 0;
+            $consignmentAcc = $this->site->getAccountSettingByBiller($biller_id);
+            for ($r = 0; $r < $i; $r++) {
+                $item_id = $_POST['product_id'][$r];
+                $item_type = $_POST['product_type'][$r];
+                $item_code = $_POST['product_code'][$r];
+                $item_name = $_POST['product_name'][$r];
+                $item_comment = $_POST['product_comment'][$r];
+                $item_option = isset($_POST['product_option'][$r]) && $_POST['product_option'][$r] != 'false' ? $_POST['product_option'][$r] : null;
+                $real_unit_price = $this->bpas->formatDecimalRaw($_POST['real_unit_price'][$r]);
+                $unit_price = $this->bpas->formatDecimalRaw($_POST['unit_price'][$r]);
+                $item_unit_quantity = $_POST['quantity'][$r];
+                $item_unit = $_POST['product_unit'][$r];
+                $item_quantity = $_POST['product_base_quantity'][$r];
+                $item_serial = isset($_POST['serial'][$r]) ? $_POST['serial'][$r] : '';
+                if($_POST['expired_data'][$r] && $_POST['expired_data'][$r] != '00/00/0000'){
+                    $item_expiry = $this->bpas->fsd($_POST['expired_data'][$r]);
+                }else{
+                    $item_expiry = null;
+                }
+                if (isset($item_code) && isset($item_quantity)) {
+                    $product_details = $item_type != 'manual' ? $this->sales_model->getProductByCode($item_code) : null;
+                    $unit_price = $this->bpas->formatDecimalRaw($unit_price);
+                    $item_net_price = $unit_price;
+                    $pr_item_discount = $this->bpas->formatDecimalRaw($item_unit_quantity);
+                    $subtotal = ($item_net_price * $item_unit_quantity);
+                    $unit = $this->site->getProductUnit($product_details->id,$item_unit);
+                    
+                    if($this->Settings->module_account_method == '0'){
+                        $costs = $this->site->getFifoCost($product_details->id,$item_quantity,$stockmoves,'Consignment',$id);
+                    }else if($this->Settings->module_account_method == '1'){
+                        $costs = $this->site->getLifoCost($product_details->id,$item_quantity,$stockmoves,'Consignment',$id);
+                    }else if($this->Settings->module_account_method == '3'){
+                        $costs = $this->site->getProductMethod($product_details->id,$item_quantity,$stockmoves,'Consignment',$id);
+                    }
+                    
+                    if($costs && $item_serial == ""){
+                        $productAcc = $this->site->getProductAccByProductId($item_id);
+                        foreach($costs as $cost_item){
+                            $stockmoves[] = array(
+                                'transaction_id' => $id,
+                                'transaction' => 'Consignment',
+                                'product_id' => $product_details->id,
+                                'product_code' => $item_code,
+                                'product_type' => $item_type,
+                                'option_id' => $item_option,
+                                'quantity' => $cost_item['quantity'] * (-1),
+                                'unit_quantity' => $unit->unit_qty,
+                                'unit_code' => $unit->code,
+                                'unit_id' => $item_unit,
+                                'warehouse_id' => $warehouse_id,
+                                'date' => $date,
+                                'expiry' => $item_expiry,
+                                'real_unit_cost' => $cost_item['cost'],
+                                'reference_no' => $reference,
+                                'user_id' => $this->session->userdata('user_id'),
+                            );
+                            if($this->Settings->module_account == 1){       
+                                $accTrans[] = array(
+                                    'transaction_id' => $id,
+                                    'transaction' => 'Consignment',
+                                    'tran_date' => $date,
+                                    'reference' => $reference,
+                                    'account' => $productAcc->stock_account,
+                                    'amount' => -($cost_item['cost'] * abs($cost_item['quantity'])),
+                                    'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$cost_item['quantity'].'#'.'Cost: '.$cost_item['cost'],
+                                    'description' => $note,
+                                    'biller_id' => $biller_id,
+                                    'project_id' => $project_id,
+                                    'user_id' => $this->session->userdata('user_id'),
+                                    'customer_id' => $customer_id,
+                                );
+                                $accTrans[] = array(
+                                    'transaction' => 'Consignment',
+                                    'tran_date' => $date,
+                                    'reference' => $reference,
+                                    'account' => $consignmentAcc->consignment_acc,
+                                    'amount' => ($cost_item['cost'] * abs($cost_item['quantity'])),
+                                    'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$cost_item['quantity'].'#'.'Cost: '.$cost_item['cost'],
+                                    'description' => $note,
+                                    'biller_id' => $biller_id,
+                                    'project_id' => $project_id,
+                                    'user_id' => $this->session->userdata('user_id'),
+                                    'customer_id' => $customer_id,
+                                );
+                                
+                            }
+                        }
+                    }else{
+                        $stockmoves[] = array(
+                            'transaction_id' => $id,
+                            'transaction' => 'Consignment',
+                            'product_id' => $product_details->id,
+                            'product_code' => $item_code,
+                            'product_type' => $item_type,
+                            'option_id' => $item_option,
+                            'quantity' => (-1)*$item_quantity,
+                            'unit_quantity' => $unit->unit_qty,
+                            'unit_code' => $unit->code,
+                            'unit_id' => $item_unit,
+                            'warehouse_id' => $warehouse_id,
+                            'date' => $date,
+                            'expiry' => $item_expiry,
+                            'serial_no' => $item_serial,
+                            'real_unit_cost' => $product_details->cost,
+                            'reference_no' => $reference,
+                            'user_id' => $this->session->userdata('user_id'),
+                        );
+                        if($this->Settings->module_account == 1){       
+                            $productAcc = $this->site->getProductAccByProductId($product_details->id);
+                            $accTrans[] = array(
+                                'transaction_id' => $id,
+                                'transaction' => 'Consignment',
+                                'tran_date' => $date,
+                                'reference' => $reference,
+                                'account' => $productAcc->stock_account,
+                                'amount' => -($product_details->cost * abs($item_quantity)),
+                                'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$item_quantity.'#'.'Cost: '.$product_details->cost,
+                                'description' => $note,
+                                'biller_id' => $biller_id,
+                                'project_id' => $project_id,
+                                'user_id' => $this->session->userdata('user_id'),
+                                'customer_id' => $customer_id,
+                            );
+                            $accTrans[] = array(
+                                'transaction_id' => $id,
+                                'transaction' => 'Consignment',
+                                'tran_date' => $date,
+                                'reference' => $reference,
+                                'account' => $consignmentAcc->consignment_acc,
+                                'amount' => ($product_details->cost * abs($item_quantity)),
+                                'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$item_quantity.'#'.'Cost: '.$product_details->cost,
+                                'description' => $note,
+                                'biller_id' => $biller_id,
+                                'project_id' => $project_id,
+                                'user_id' => $this->session->userdata('user_id'),
+                                'customer_id' => $customer_id,
+                            );
+                            
+                        }
+                    }
+
+                    $products[] = array(
+                        'consignment_id' => $id,
+                        'product_id' => $item_id,
+                        'product_code' => $item_code,
+                        'product_name' => $item_name,
+                        'product_type' => $item_type,
+                        'option_id' => $item_option,
+                        'net_unit_price' => $item_net_price,
+                        'unit_price' => $this->bpas->formatDecimalRaw($item_net_price),
+                        'quantity' => $item_quantity,
+                        'product_unit_id' => $item_unit,
+                        'product_unit_code' => $unit->code,
+                        'unit_quantity' => $item_unit_quantity,
+                        'warehouse_id' => $warehouse_id,
+                        'subtotal' => $this->bpas->formatDecimalRaw($subtotal),
+                        'real_unit_price' => $real_unit_price,
+                        'comment' => $item_comment,
+                        'expiry' => $item_expiry,
+                        'serial_no' => $item_serial,
+                    );
+                    $total += $this->bpas->formatDecimalRaw($item_net_price * $item_unit_quantity);
+                }
+            }
+            if (empty($products)) {
+                $this->form_validation->set_rules('product', lang("order_items"), 'required');
+            } else {
+                krsort($products);
+            }
+            $grand_total = $this->bpas->formatDecimalRaw($total);
+            $data = array('date' => $date,
+                'reference_no' => $reference,
+                'customer_id' => $customer_id,
+                'customer' => $customer,
+                'biller_id' => $biller_id,
+                'biller' => $biller,
+                'project_id' => $project_id,
+                'warehouse_id' => $warehouse_id,
+                'note' => $note,
+                'total' => $total,
+                'grand_total' => $grand_total,
+                'valid_day' => $valid_day,
+                'updated_by' => $this->session->userdata('user_id'),
+                'updated_at' => date('Y-m-d H:i:s'),
+            );
+
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->updateConsignment($id, $data, $products, $stockmoves, $accTrans)) {
+            $this->session->set_userdata('remove_csmls', 1);
+            $this->session->set_flashdata('message', $this->lang->line("consignment_updated") ." ". $reference);
+            admin_redirect('sales/consignments');
+        } else {
+            
+            $consingment_items = $this->sales_model->getConsigmentItems($id);
+            krsort($consingment_items);
+            $c = rand(100000, 9999999);
+            foreach ($consingment_items as $item) {
+                $row = $this->site->getProductByID($item->product_id);
+                if (!$row) {
+                    $row = json_decode('{}');
+                }
+                $row->quantity = 0;
+            
+                if($this->Settings->product_expiry == '1'){
+                    $product_expiries = $this->site->getProductExpiredByProductID($item->product_id, $consignment->warehouse_id, 'Consignment' , $id);
+                }else{
+                    $product_expiries = false;
+                }
+                $row->fup = 1;
+                $row->id = $item->product_id;
+                $row->code = $item->product_code;
+                $row->name = $item->product_name;
+                $row->type = $item->product_type;
+                $row->base_quantity = $item->quantity;
+                $row->base_unit = $row->unit ? $row->unit : $item->product_unit_id;
+                $row->base_unit_price = $row->price ? $row->price : $item->real_unit_price;
+                $row->unit = $item->product_unit_id;
+                $row->qty = $item->unit_quantity;
+                $row->price = $this->bpas->formatDecimalRaw($item->net_unit_price);
+                $row->unit_price = $item->unit_price ;
+                $row->real_unit_price = $item->real_unit_price;
+                $row->option = $item->option_id;
+                $row->comment = $item->comment;
+                $row->serial = $item->serial_no;
+                $row->expired = $this->bpas->hrsd($item->expiry);
+                $options = $this->sales_model->getProductOptions($row->id, $item->warehouse_id);
+                if ($options) {
+                    $option_quantity = 0;
+                    foreach ($options as $option) {
+                       
+                        if($option->id == $item->option_id){
+                            $option->quantity += $item->quantity;
+                        }
+                    }
+                }
+
+                $combo_items = false;
+                if ($row->type == 'combo') {
+                    $combo_items = $this->sales_model->getProductComboItems($row->id, $item->warehouse_id);
+                    foreach ($combo_items as $combo_item) {
+                        $combo_item->quantity = $combo_item->qty * $item->quantity;
+                    }
+                }
+                $units = $this->site->getUnitbyProduct($row->id,$row->base_unit);
+                $ri = $this->Settings->item_addition ? $row->id : $c;
+                $pr[$ri] = array('id' => $c, 'item_id' => $row->id, 'label' => $row->name . " (" . $row->code . ")", 'row' => $row, 'combo_items' => $combo_items, 'units' => $units, 'options' => $options,'product_expiries' => $product_expiries);
+                $c++;
+            }
+            
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['consignment'] = $consignment;
+            $this->data['consingment_items'] = json_encode($pr);
+            $this->data['billers'] =  $this->site->getBillers();
+            $this->data['warehouses'] = $this->site->getWarehouses();
+            $this->session->set_userdata('remove_csmls', 1);
+            $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('products'), 'page' => lang('inventory')), array('link' => admin_url('products/consignments'), 'page' => lang('consignments')), array('link' => '#', 'page' => lang('edit_consignment')));
+            $meta = array('page_title' => lang('edit_consignment'), 'bc' => $bc);
+            $this->page_construct('sales/edit_consignment', $meta, $this->data);
+        }
+    }
+    public function delete_consignment($id = null)
+    {
+        $this->bpas->checkPermissions(NULL, true);
+        $consignment = $this->sales_model->getConsignmentByID($id);
+        if($consignment->status == 'partial'){
+            $this->session->set_flashdata('error', lang("consignment_is_in_process"));
+            $this->bpas->md();
+        }else if($consignment->status == 'completed'){
+            $this->session->set_flashdata('error', lang("consignment_is_already_completed"));
+            $this->bpas->md();
+        }else{
+            if ($this->input->get('id')) {
+                $id = $this->input->get('id');
+            }
+            if ($this->sales_model->deleteConsignment($id)) {
+                if ($this->input->is_ajax_request()) {
+                    echo lang("consignment_deleted");
+                    die();
+                }
+                $this->session->set_flashdata('message', lang('consignment_deleted'));
+                admin_redirect('sales/consignments');
+            }
+        }   
+    }
+    public function modal_view_consignment($id = null)
+    {
+        $this->bpas->checkPermissions('consignments', true);
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $consignment = $this->sales_model->getConsignmentByID($id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($consignment->created_by, true);
+        }
+        $this->data['rows'] = $this->sales_model->getConsigmentItems($id);
+        $this->data['customer'] = $this->site->getCompanyByID($consignment->customer_id);
+        $this->data['biller'] = $this->site->getCompanyByID($consignment->biller_id);
+        $this->data['created_by'] = $this->site->getUser($consignment->created_by);
+        $this->data['updated_by'] = $consignment->updated_by ? $this->site->getUser($consignment->updated_by) : null;
+        $this->data['warehouse'] = $this->site->getWarehouseByID($consignment->warehouse_id);
+        $this->data['consignment'] = $consignment;
+        $this->data['project'] = $this->site->getProjectByID($consignment->project_id);
+       
+        $this->load->view($this->theme . 'sales/modal_view_consignment', $this->data);
+
+    }
+    public function consignment_actions()
+    {
+        if (!$this->Owner && !$this->GP['bulk_actions']) {
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        $this->form_validation->set_rules('form_action', lang("form_action"), 'required');
+        if ($this->form_validation->run() == true) {
+            if (!empty($_POST['val'])) {
+                if ($this->input->post('form_action') == 'delete') {
+                    $this->bpas->checkPermissions('delete_consignment', true);
+                    foreach ($_POST['val'] as $id) {
+                        $consignment = $this->sales_model->getConsignmentByID($id);
+                        if($consignment->status == 'partial'){
+                            $this->session->set_flashdata('error', lang("consignment_is_in_process").' '.$consignment->reference_no);
+                            redirect($_SERVER["HTTP_REFERER"]);
+                        }else if($consignment->status == 'completed'){
+                            $this->session->set_flashdata('error', lang("consignment_is_already_completed").' '.$consignment->reference_no);
+                            redirect($_SERVER["HTTP_REFERER"]);
+                        }
+                        $this->sales_model->deleteConsignment($id);
+                    }
+                    $this->session->set_flashdata('message', $this->lang->line("consignment_deleted"));
+                    redirect($_SERVER["HTTP_REFERER"]);
+
+                } elseif ($this->input->post('form_action') == 'export_excel') {
+                    $this->load->library('excel');
+                    $this->excel->setActiveSheetIndex(0);
+                    $this->excel->getActiveSheet()->setTitle(lang('consignment'));
+                    $this->excel->getActiveSheet()->SetCellValue('A1', lang('date'));
+                    $this->excel->getActiveSheet()->SetCellValue('B1', lang('reference_no'));
+                    $this->excel->getActiveSheet()->SetCellValue('C1', lang('biller'));
+                    $this->excel->getActiveSheet()->SetCellValue('D1', lang('customer'));
+                    $this->excel->getActiveSheet()->SetCellValue('E1', lang('grand_total'));
+                    $this->excel->getActiveSheet()->SetCellValue('F1', lang('status'));
+                    $row = 2;
+                    foreach ($_POST['val'] as $id) {
+                        $consignment = $this->sales_model->getConsignmentByID($id);
+                        $this->excel->getActiveSheet()->SetCellValue('A' . $row, $this->bpas->hrld($consignment->date));
+                        $this->excel->getActiveSheet()->SetCellValue('B' . $row, $consignment->reference_no);
+                        $this->excel->getActiveSheet()->SetCellValue('C' . $row, $consignment->biller);
+                        $this->excel->getActiveSheet()->SetCellValue('D' . $row, $consignment->customer);
+                        $this->excel->getActiveSheet()->SetCellValue('E' . $row, $consignment->grand_total);
+                        $this->excel->getActiveSheet()->SetCellValue('F' . $row, $consignment->status);
+                        $row++;
+                    }
+
+                    $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('C')->setWidth(30);
+                    $this->excel->getActiveSheet()->getColumnDimension('D')->setWidth(30);
+                    $this->excel->getDefaultStyle()->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $filename = 'consignments_' . date('Y_m_d_H_i_s');
+                    $this->load->helper('excel');
+                    create_excel($this->excel, $filename);
+                }
+            } else {
+                $this->session->set_flashdata('error', $this->lang->line("no_quote_selected"));
+                admin_redirect($_SERVER["HTTP_REFERER"]);
+            }
+        } else {
+            $this->session->set_flashdata('error', validation_errors());
+            admin_redirect($_SERVER["HTTP_REFERER"]);
+        }
+    }
+    function return_consignment($consignment_id = false)
+    {
+        $this->bpas->checkPermissions('add_consignment');
+        $consignment = $this->sales_model->getConsignmentByID($consignment_id);
+        if($consignment->status == 'completed'){
+            $this->session->set_flashdata('error', lang("consignment_is_already_completed"));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        $this->form_validation->set_rules('consignment', $this->lang->line("consignment"), 'required');
+        if ($this->form_validation->run() == true) {
+            $i = ($this->input->post('product_id')) ? sizeof($this->input->post('product_id')) : 0;
+            if ($this->Owner || $this->Admin || $this->bpas->GP['consignments-date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = ($this->Settings->date_with_time==0 ? date('Y-m-d') : date('Y-m-d H:i:s'));
+            }
+            $reference_no = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('rcsm',$consignment->biller_id);
+            $note = $this->bpas->clear_tags($this->input->post('note'));
+            $consignmentAcc = $this->site->getAccountSettingByBiller($consignment->biller_id);
+            $products = false;
+            $grand_total = 0;
+            for ($r = 0; $r < $i; $r++) {
+                $consignment_item_id = $this->input->post('consignment_item_id')[$r];
+                $product_id = $this->input->post('product_id')[$r];
+                $product_code = $this->input->post('product_code')[$r];
+                $product_name = $this->input->post('product_name')[$r];
+                $product_expiry = $this->input->post('product_expiry')[$r];
+                $product_serial = $this->input->post('product_serial')[$r];
+                $product_cost = $this->input->post('product_cost')[$r];
+                $product_type = $this->input->post('product_type')[$r];
+                $option_id = $this->input->post('option_id')[$r];
+                $product_unit_id = $_POST['unit'][$r];
+                $return_quantity = $this->input->post('return_quantity')[$r] * (-1);
+                $quantity = $return_quantity;
+                $real_unit_price = $this->input->post('real_unit_price')[$r];
+                if($return_quantity < 0){
+                    $unit = $this->site->getProductUnit($product_id,$product_unit_id);
+                    if($unit->unit_qty > 1){
+                        $quantity = $quantity * $unit->unit_qty;
+                    }
+                    $unit_price = $real_unit_price *  $unit->unit_qty;
+                    $stockmoves[] = array(
+                        'transaction' => 'Consignment',
+                        'product_id' => $product_id,
+                        'product_code' => $product_code,
+                        'product_type' => $product_type,
+                        'option_id' => $option_id,
+                        'quantity' => (-1)*$quantity,
+                        'unit_quantity' => $unit->unit_qty,
+                        'unit_code' => $unit->code,
+                        'unit_id' => $product_unit_id,
+                        'warehouse_id' => $consignment->warehouse_id,
+                        'expiry' => $product_expiry,
+                        'date' => $date,
+                        'real_unit_cost' => $product_cost,
+                        'serial_no' => $product_serial,
+                        'reference_no' => $reference_no,
+                        'user_id' => $this->session->userdata('user_id'),
+                    );
+
+                    
+                    if($this->Settings->module_account == 1){       
+                        $productAcc = $this->site->getProductAccByProductId($product_id);
+                        $accTrans[] = array(
+                            'tran_type' => 'Consignment',
+                            'tran_date' => $date,
+                            'account_code' => $productAcc->stock_account,
+                            'amount' => ($product_cost * abs($quantity)),
+                            'narrative' => 'Product Code: '.$product_code.'#'.'Qty: '.abs($quantity).'#'.'Cost: '.$product_cost,
+                            'description' => $note,
+                            'biller_id' => $consignment->biller_id,
+                            'project_id' => $consignment->project_id,
+                            'user_id' => $this->session->userdata('user_id'),
+                            'customer_id' => $consignment->customer_id,
+                            'reference' => $reference_no,
+                        );
+                        $accTrans[] = array(
+                            'tran_type' => 'Consignment',
+                            'tran_date' => $date,
+                            'account_code' => $consignmentAcc->consignment_acc,
+                            'amount' => -($product_cost * abs($quantity)),
+                            'narrative' => 'Product Code: '.$product_code.'#'.'Qty: '.abs($quantity).'#'.'Cost: '.$product_cost,
+                            'description' => $note,
+                            'biller_id' => $consignment->biller_id,
+                            'project_id' => $consignment->project_id,
+                            'user_id' => $this->session->userdata('user_id'),
+                            'customer_id' => $consignment->customer_id,
+                            'reference' => $reference_no,
+                        );
+                        
+                    }
+                    
+                    $products[] = array(
+                                    'consignment_item_id' => $consignment_item_id,
+                                    'product_id' => $product_id,
+                                    'product_code' => $product_code,
+                                    'product_name' => $product_name,
+                                    'product_type' => $product_type,
+                                    'option_id' => $option_id,
+                                    'expiry' => $product_expiry,
+                                    'serial_no' => $product_serial,
+                                    'product_unit_id' => $product_unit_id,
+                                    'product_unit_code' => $unit->code,
+                                    'warehouse_id' => $consignment->warehouse_id,
+                                    'quantity' => $quantity,
+                                    'unit_quantity' => $return_quantity,
+                                    'real_unit_price' => $real_unit_price,
+                                    'unit_price' => $unit_price,
+                                    'net_unit_price' => $unit_price,
+                                    'subtotal' => $real_unit_price * $quantity,
+                                );
+                    $grand_total += $real_unit_price * $quantity;       
+                }
+            }
+            
+            if($products){
+                $data = array(
+                    'consignment_id' => $consignment_id,
+                    'reference_no' => $reference_no,
+                    'date' => $date,
+                    'warehouse_id' => $consignment->warehouse_id,
+                    'biller_id' => $consignment->biller_id,
+                    'biller' => $consignment->biller,
+                    'customer' => $consignment->customer,
+                    'customer_id' => $consignment->customer_id,
+                    'project_id' => $consignment->project_id,
+                    'grand_total' => $grand_total,  
+                    'total' => $grand_total,    
+                    'status' => 'returned', 
+                    'note' => $note,
+                    'created_by' => $this->session->userdata('user_id')
+                );
+                if ($_FILES['document']['size'] > 0) {
+                    $this->load->library('upload');
+                    $config['upload_path'] = $this->digital_upload_path;
+                    $config['allowed_types'] = $this->digital_file_types;
+                    $config['max_size'] = $this->allowed_file_size;
+                    $config['overwrite'] = FALSE;
+                    $config['encrypt_name'] = TRUE;
+                    $this->upload->initialize($config);
+                    if (!$this->upload->do_upload('document')) {
+                        $error = $this->upload->display_errors();
+                        $this->session->set_flashdata('error', $error);
+                        admin_redirect($_SERVER["HTTP_REFERER"]);
+                    }
+                    $photo = $this->upload->file_name;
+                    $data['attachment'] = $photo;
+                }
+                if ($this->sales_model->addConsignment($data, $products, $stockmoves, $accTrans)) {
+                    $this->session->set_flashdata('message', lang("consignment_returned")." - ".$data['reference_no']);
+                    admin_redirect("sales/consignments");
+                }
+            }else{
+                $this->session->set_flashdata('error', lang("product_return_qty_is_required"));
+                admin_redirect($_SERVER["HTTP_REFERER"]);
+            }
+    
+        }else{
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $consignment_items = $this->sales_model->getConsigmentItems($consignment_id);
+            $this->data['consignment'] = $consignment;
+            $this->data['consignment_items'] = $consignment_items;
+            $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('products'), 'page' => lang('inventory')), array('link' => admin_url('sales/consignments'), 'page' => lang('consignments')), array('link' => '#', 'page' => lang('return_consignment')));
+            $meta = array('page_title' => lang('return_consignment'), 'bc' => $bc);
+            $this->page_construct('sales/return_consignment', $meta, $this->data);
+        }
+        
+    }
+    public function view_consignment_return($id = null)
+    {
+        $this->data['consignment'] = $this->sales_model->getConsignmentByID($id);
+        $this->data['returns'] = $this->sales_model->getConsignmentByConsignID($id);
+        $this->load->view($this->theme . 'sales/view_consignment_return', $this->data);
+    }
+    public function sale_install_term_alerts($biller_id = null){
+        $this->bpas->checkPermissions();
+        $user = $this->site->getUser($this->session->userdata('user_id'));
+        if ($this->Settings->multi_biller) {
+            $count = $user->multi_biller ? explode(',', $user->multi_biller) : null;         
+        } else {
+            $count = $user->biller_id ? ((array) $user->biller_id) : null;
+        }
+
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        if ($this->Owner || $this->Admin || empty($count)) {
+            $this->data['billers']   = $this->site->getAllCompanies('biller');
+            $this->data['biller_id'] = $biller_id;
+            $this->data['biller']    = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        } else {
+            if (count($count) > 1) {
+                $this->data['billers']   = $this->site->getAllCompanies('biller');
+            } else {
+                $this->data['billers']   = null;
+            }
+            $this->data['count_billers'] = $count;
+            $this->data['user_biller']   = (isset($count) && count($count) == 1) ? $this->site->getCompanyByID($this->session->userdata('biller_id')) : null;
+            $this->data['biller_id']     = $biller_id;
+            $this->data['biller']        = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        }
+
+        $this->data['alert_id'] = isset($_GET['alert_id']) ? ($_GET['alert_id'] !== '' ? $_GET['alert_id'] : 'empty')  : null;
+        $this->data['users']            = $this->site->getStaff();
+        $this->data['products']         = $this->site->getProducts();
+        $this->data['warehouses']       = $this->site->getAllWarehouses();
+        $this->data['count_warehouses'] = explode(',', $this->session->userdata('warehouse_id'));
+        $this->data['drivers']          = $this->site->getDriver();
+
+        $bc   = [['link' => base_url(), 'page' => lang('home')], ['link' => '#', 'page' => lang('sales')]];
+        $meta = ['page_title' => lang('sales'), 'bc' => $bc];
+        $this->page_construct('sales/index', $meta, $this->data);
+    }
+    public function getSaleInstallTermAlerts($biller_id = null)
+    {
+        $this->bpas->checkPermissions('index');
+        if ((!$this->Owner && !$this->Admin) && !$biller_id) {
+            $user = $this->site->getUser($this->session->userdata('user_id'));
+            if ($this->Settings->multi_biller) {
+                $biller_id = $user->multi_biller ? explode(',', $user->multi_biller) : null;         
+            } else {
+                $biller_id = $user->biller_id ? ((array) $user->biller_id) : null;
+            }
+        }
+        $user_query     = $this->input->get('user') ? $this->input->get('user') : null;
+        $customer       = $this->input->get('customer') ? $this->input->get('customer') : null;
+        $biller         = $this->input->get('biller') ? $this->input->get('biller') : null;
+        $reference_no   = $this->input->get('reference_no') ? $this->input->get('reference_no') : NULL;
+        $saleman_by     = $this->input->get('saleman_by') ? $this->input->get('saleman_by') : null;
+        $product_id     = $this->input->get('product_id') ? $this->input->get('product_id') : null;
+        $warehouse      = $this->input->get('warehouse') ? $this->input->get('warehouse') : null;
+        $delivered_by   = $this->input->get('delivered_by') ? $this->input->get('delivered_by') : null;
+        $payment_status = $this->input->get('payment_status') ? $this->input->get('payment_status') : NULL;
+        $start_date     = $this->input->get('start_date') ? $this->input->get('start_date') : null;
+        $end_date       = $this->input->get('end_date') ? $this->input->get('end_date') : null;
+
+        $a              = $this->input->get('a') ? $this->input->get('a') : null;
+
+        if ($start_date) {
+            $start_date = $this->bpas->fld($start_date . ' 00:00:00');
+            $end_date   = $this->bpas->fld($end_date . ' 23:59:00');
+        }
+        $installment_link = '';
+        if($this->Settings->module_installment && (isset($this->GP['installments-add']) || ($this->Owner || $this->Admin))){
+            $installment_link = anchor('admin/installments/add/$1', '<i class="fa fa-plus-circle"></i> ' . lang('add_installment'),'class="add_installment"');
+        }
+
+        $view_logo        = anchor('admin/sales/modal_view/$1/logo', '<i class="fa fa-money"></i> ' . lang('print_with_logo'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $detail_link          = anchor('admin/sales/modal_view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('sale_details'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+     
+        $view_ticket          = anchor('admin/sales/view_ticket/$1', '<i class="fa fa-file-text-o"></i> ' . lang('view_ticket'));
+        $dental_invoice_link = '';$add_draw_link = '';
+        if($this->Settings->module_clinic){
+            $dental_invoice_link  = anchor('admin/sales/dental_clinic/$1', '<i class="fa fa-file-text-o"></i> ' . lang('invoice_dental_clinic'));
+            $add_draw_link        = anchor('admin/sales/add_draw/$1', '<i class="fa fa-pencil"></i> ' . lang('add_draw'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        }
+
+        $return_detail_link   = anchor('admin/sales/return_view/$1', '<i class="fa fa-file-text-o"></i> ' . lang('return_sale') . ' ' . lang('details'));
+        $duplicate_link       = anchor('admin/sales/add?sale_id=$1', '<i class="fa fa-plus-circle"></i> ' . lang('duplicate_sale'));
+        $payments_link        = anchor('admin/sales/payments/$1', '<i class="fa fa-money"></i> ' . lang('view_payments'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_payment_link     = anchor('admin/sales/add_payment/$1', '<i class="fa fa-money"></i> ' . lang('add_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+
+        $down_payments_link   = anchor('admin/sales/view_down_payments/$1', '<i class="fa fa-money"></i> ' . lang('view_down_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_Downpayment_link = anchor('admin/sales/add_downpayment/$1', '<i class="fa fa-money"></i> ' . lang('add_down_payment'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+
+        $packagink_link       = anchor('admin/sales/packaging/$1', '<i class="fa fa-archive"></i> ' . lang('packaging'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        // $add_delivery_link    = anchor('admin/sales/add_delivery/$1', '<i class="fa fa-truck"></i> ' . lang('add_delivery'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $add_delivery_link    = anchor('admin/deliveries/add/0/$1', '<i class="fa fa-truck"></i> ' . lang('add_delivery'));
+        $add_credit_note_link = anchor('admin/sales/add_credit_note/$1', '<i class="fa fa-truck"></i> ' . lang('add_credit_note'));
+        $email_link           = anchor('admin/sales/email/$1', '<i class="fa fa-envelope"></i> ' . lang('email_sale'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $edit_link            = anchor('admin/sales/edit/$1', '<i class="fa fa-edit"></i> ' . lang('edit_sale'));
+        $request_edit_link    = anchor('admin/sales/add_request_edit_sale/$1', '<i class="fa fa-file-text"></i> ' . lang('request_edit_sale'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $pdf_link             = anchor('admin/sales/pdf/$1', '<i class="fa fa-file-pdf-o"></i> ' . lang('download_pdf'));
+        $return_link          = anchor('admin/sales/return_sale/$1', '<i class="fa fa-angle-double-left"></i> ' . lang('return_sale'));
+        $add_warranty_link    = anchor('admin/sales/add_maintenance/$1', '<i class="fa fa-money"></i> ' . lang('add_maintenance'), 'data-toggle="modal" data-backdrop="static" data-target="#myModal"');
+        $delete_link          = "<a href='#' class='po' title='<b>" . lang('delete_sale') . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_sale') . '</a>';
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+        <ul class="dropdown-menu pull-right" role="menu">
+            <li>' . $detail_link . '</li>
+            <li>' . $view_logo . '</li> 
+                <li>' . $payments_link . '</li>
+                <li>' . $add_payment_link . '</li>
+                <li>' . $packagink_link . '</li>
+                <li>' . $add_delivery_link . '</li>
+                <li>' . $add_credit_note_link . '</li>
+                <li>' . $installment_link . '</li>
+                <li class="delete">' . $delete_link . '</li>
+            </ul>
+        </div></div>';
+
+        $ds = "( SELECT d.sale_id,d.delivered_by,d.status,c.name as delivery_name
+        from {$this->db->dbprefix('deliveries')} d LEFT JOIN {$this->db->dbprefix('companies')} c 
+        on d.delivered_by = c.id GROUP BY d.sale_id) FSI";
+        //FSI.status as delivery_status, 
+        // COALESCE({$this->db->dbprefix('sales')}.delivery_status, FSI.status) as delivery_status,
+        $this->load->library('datatables');
+        $this->datatables
+        ->select("{$this->db->dbprefix('sales')}.id as id, 
+            DATE_FORMAT({$this->db->dbprefix('sales')}.date, '%Y-%m-%d %T') as date,
+            project_name,
+            FSI.delivery_name as delivered_by,
+            CONCAT({$this->db->dbprefix('users')}.first_name, ' ', {$this->db->dbprefix('users')}.last_name) as saleman_by,
+            {$this->db->dbprefix('sales_order')}.reference_no as sr_ref, 
+            {$this->db->dbprefix('sales')}.reference_no, 
+            {$this->db->dbprefix('sales')}.biller, 
+            {$this->db->dbprefix('sales')}.customer, 
+            {$this->db->dbprefix('sales')}.sale_status, 
+            {$this->db->dbprefix('sales')}.grand_total, 
+            {$this->db->dbprefix('sales')}.paid, 
+            ({$this->db->dbprefix('sales')}.grand_total - {$this->db->dbprefix('sales')}.paid) as balance,
+            {$this->db->dbprefix('sales')}.payment_status, 
+            {$this->db->dbprefix('sales')}.delivery_status, 
+            {$this->db->dbprefix('sales')}.return_id")
+        ->join('projects', 'sales.project_id = projects.project_id', 'left')
+        ->join('sales_order', 'sales.so_id = sales_order.id', 'left')
+        ->join('users', 'sales.saleman_by = users.id', 'left')
+        ->join($ds, 'FSI.sale_id=sales.id', 'left')
+        ->order_by('sales.id', 'desc')
+        ->from('sales');
+
+        $this->datatables->where('sales.module_type','inventory');
+        $this->datatables->where('sales.hide', 1);
+        if ($biller_id) {
+            $this->datatables->where_in('sales.biller_id', $biller_id);
+        }
+        if (!$this->Customer && !$this->Supplier && !$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where("FIND_IN_SET(bpas_sales.created_by, '" . $this->session->userdata('user_id') . "')");
+        }
+        if ($this->Customer) {
+            $this->datatables->where('projects.customer_id','bpas_projects.customer_id');
+        }
+        if ($this->input->get('attachment') == 'yes') {
+            $this->datatables->where('payment_status !=', 'paid')->where('attachment !=', null);
+        }
+
+        if ($user_query) {
+            $this->datatables->where('sales.created_by', $user_query);
+        }
+        
+        if ($payment_status) {
+            $get_status = explode('_', $payment_status);
+            $this->datatables->where_in('sales.payment_status', $get_status);
+        }
+        if ($reference_no) {
+            $this->datatables->where('sales.reference_no', $reference_no);
+        }
+        if ($biller) {
+            $this->datatables->where('sales.biller_id', $biller);
+        }
+        if ($customer) {
+            $this->datatables->where('sales.customer_id', $customer);
+        }
+        if ($saleman_by) {
+            $this->datatables->where('sales.saleman_by', $saleman_by);
+        }
+        if ($warehouse) {
+            $this->datatables->where('sales.warehouse_id', $warehouse);
+        }
+        if ($start_date) {
+            $this->datatables->where($this->db->dbprefix('sales') . '.date BETWEEN "' . $start_date . '" and "' . $end_date . '"');
+        }
+        $this->datatables->where($this->db->dbprefix('sales') . '.pos !=', 1);
+        $this->datatables->add_column('Actions', $action, 'id');
+        echo $this->datatables->generate();
+    }
+    public function receive_payments($biller_id = NULL)
+    {
+        $this->bpas->checkPermissions();
+        if($biller_id == 0){
+            $biller_id = null;
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $this->data['billers'] = $this->site->getBillers();
+        $this->data['biller'] = $biller_id ? $this->site->getCompanyByID($biller_id) : null;    
+        $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sale')), array('link' => '#', 'page' => lang('receive_payments')));
+        $meta = array('page_title' => lang('receive_payments'), 'bc' => $bc);
+        $this->page_construct('sales/receive_payments', $meta, $this->data);
+    }
+    
+    public function getReceivePayments($biller_id = NULL)
+    {
+        $this->bpas->checkPermissions('receive_payments');
+        $edit_link = "";
+        $check_link = "";
+        $verify_link = "";
+        $approve_link = "";
+        $unapprove_link = "";
+        $delete_link = "";
+        $detail_link = anchor('admin/sales/modal_view_receive_payment/$1', '<i class="fa fa-file-text-o"></i> ' . lang('receive_payment'), 'data-toggle="modal" data-backdrop="static" data-keyboard="false" data-target="#myModal2"');
+        if($this->Admin || $this->Owner || $this->GP['sales-edit_receive_payment']){
+            $edit_link = anchor('admin/sales/edit_receive_payment/$1', '<i class="fa fa-edit"></i> ' . lang('edit_receive_payment'), ' class="edit_receive_payment" ');
+        }
+        if($this->Admin || $this->Owner || $this->GP['sales-check_receive_payment']){
+            $check_link = "<a href='#' class='po check_receive_payment' title='<b>" . $this->lang->line("check_receive_payment") . "</b>' data-content=\"<p>"
+            . lang('r_u_sure') . "</p><a class='btn btn-success po-delete' href='" . admin_url('sales/update_receive_status/$1/checked') . "'>"
+            . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-check\"></i> "
+            . lang('check_receive_payment') . "</a>";
+        }
+        if($this->Admin || $this->Owner || $this->GP['sales-verify_receive_payment']){
+            $verify_link = "<a href='#' class='po verify_receive_payment' title='<b>" . $this->lang->line("verify_receive_payment") . "</b>' data-content=\"<p>"
+            . lang('r_u_sure') . "</p><a class='btn btn-success po-delete' href='" . admin_url('sales/update_receive_status/$1/verified') . "'>"
+            . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-check\"></i> "
+            . lang('verify_receive_payment') . "</a>";
+        }
+        if($this->Admin || $this->Owner || $this->GP['sales-approve_receive_payment']){
+            $approve_link = "<a href='#' class='po approve_receive_payment' title='<b>" . $this->lang->line("approve_receive_payment") . "</b>' data-content=\"<p>"
+            . lang('r_u_sure') . "</p><a class='btn btn-success po-delete' href='" . admin_url('sales/update_receive_status/$1/approved') . "'>"
+            . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-check\"></i> "
+            . lang('approve_receive_payment') . "</a>";
+            
+            $unapprove_link = "<a href='#' class='po unapprove_receive_payment' title='<b>" . $this->lang->line("unapprove_receive_payment") . "</b>' data-content=\"<p>"
+            . lang('r_u_sure') . "</p><a class='btn btn-success po-delete' href='" . admin_url('sales/update_receive_status/$1/pending') . "'>"
+            . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-check\"></i> "
+            . lang('unapprove_receive_payment') . "</a>";
+        }
+        if($this->Admin || $this->Owner || $this->GP['sales-delete_receive_payment']){
+            $delete_link = "<a href='#' class='po delete_receive_payment' title='<b>" . $this->lang->line("delete_receive_payment") . "</b>' data-content=\"<p>"
+            . lang('r_u_sure') . "</p><a class='btn btn-danger' href='" . admin_url('sales/delete_receive_payment/$1') . "'>"
+            . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+            . lang('delete_receive_payment') . "</a>";
+        }
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+                    <ul class="dropdown-menu pull-right" role="menu">
+                        <li>' . $detail_link . '</li>
+                        <li>' . $check_link . '</li>
+                        <li>' . $verify_link . '</li>
+                        <li>' . $approve_link . '</li>
+                        <li>' . $unapprove_link . '</li>
+                        <li>' . $edit_link . '</li>
+                        <li>' . $delete_link . '</li>
+                    </ul>
+                </div></div>';
+        $this->load->library('datatables');
+        $this->datatables->select("
+                                    receive_payments.id as id,
+                                    DATE_FORMAT(".$this->db->dbprefix('receive_payments').".date, '%Y-%m-%d %T') as date,
+                                    receive_payments.reference_no,
+                                    DATE_FORMAT(".$this->db->dbprefix('receive_payments').".from_date, '%Y-%m-%d') as from_date,
+                                    DATE_FORMAT(".$this->db->dbprefix('receive_payments').".to_date, '%Y-%m-%d') as to_date,
+                                    receive_payments.amount,
+                                    CONCAT(".$this->db->dbprefix('users').".last_name,' ',".$this->db->dbprefix('users').".first_name) as created_by,
+                                    receive_payments.checked_name,
+                                    receive_payments.approved_name,
+                                    receive_payments.verified_name,
+                                    receive_payments.status,
+                                    receive_payments.attachment
+                                ")
+                            ->join('users','users.id = receive_payments.created_by','left')
+                            ->from('receive_payments');
+        if ($biller_id) {
+            $this->datatables->where('receive_payments.biller_id', $biller_id);
+        }   
+        if (!$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where('receive_payments.created_by', $this->session->userdata('user_id'));
+        }
+        if (!$this->Owner && !$this->Admin && $this->session->userdata('biller_id')) { 
+            $this->datatables->where('receive_payments.biller_id', $this->session->userdata('biller_id'));
+        }
+        $this->datatables->add_column("Actions", $action, "id");
+        echo $this->datatables->generate();
+    }
+    public function add_receive_payment(){
+        $this->bpas->checkPermissions();
+        $this->form_validation->set_message('is_natural_no_zero', $this->lang->line("no_zero_required"));
+        $this->form_validation->set_rules('biller', $this->lang->line("biller"), 'required');
+        $this->form_validation->set_rules('from_date', $this->lang->line("from_date"), 'required');
+        $this->form_validation->set_rules('to_date', $this->lang->line("to_date"), 'required');
+        if ($this->form_validation->run() == true) {
+            if ($this->Owner || $this->Admin  || $this->bpas->GP['receive_payments-date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = ($this->Settings->date_with_time==0 ? date('Y-m-d') : date('Y-m-d H:i:s'));
+            }
+            $biller_id = $this->input->post('biller');
+            $paid_by = $this->input->post('paid_by') ? json_encode($this->input->post('paid_by')) : "";
+            $received_by = $this->input->post('received_by');
+            $type = $this->input->post('type');
+            $note = $this->input->post('note');
+            $from_date = $this->bpas->fld(trim($this->input->post('from_date')));
+            $to_date = $this->bpas->fld(trim($this->input->post('to_date')));
+            $i = isset($_POST['payment_id']) ? sizeof($_POST['payment_id']) : 0;
+            $total = 0;
+            $items = false;
+            for ($r = 0; $r < $i; $r++) {
+                $payment_id = $_POST['payment_id'][$r];
+                $payment_date = $_POST['payment_date'][$r];
+                $sale_ref = $_POST['sale_ref'][$r];
+                $payment_ref = $_POST['payment_ref'][$r];
+                $payment_paid_by = $_POST['payment_paid_by'][$r];
+                $payment_amount = $_POST['payment_amount'][$r];
+                $payment_created_by = $_POST['payment_created_by'][$r];
+                $customer = $_POST['customer'][$r];
+                $items[] = array(
+                    'payment_id' => $payment_id,
+                    'payment_date' => $payment_date,
+                    'sale_ref' => $sale_ref,
+                    'payment_ref' => $payment_ref,
+                    'payment_paid_by' => $payment_paid_by,
+                    'payment_amount' => $payment_amount,
+                    'payment_created_by' => $payment_created_by,
+                    'customer' => $customer,
+                    
+                );
+                $total += $payment_amount;
+            }
+            if (!$items) {
+                $this->form_validation->set_rules('payment', lang("order_items"), 'required');
+            } else {
+                krsort($items);
+            }
+            $reference_no = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('rp',$biller_id);
+            $data = array(
+                'date' => $date,
+                'biller_id' => $biller_id,
+                'reference_no' => $reference_no,
+                'from_date' => $from_date,
+                'to_date' => $to_date,
+                'received_by' => $received_by,
+                'paid_by' => $paid_by,
+                'type' => $type,
+                'amount' => $total,
+                'note' => $note,
+                'status' => "pending",
+                'created_by' => $this->session->userdata('user_id'),
+                'created_at' => date('Y-m-d H:i:s'),
+            );
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $attachment = $this->upload->file_name;
+                $data['attachment'] = $attachment;
+            }
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->addReceivePyament($data,$items)) { 
+            $this->session->set_flashdata('message', $this->lang->line("receive_payment_added"));          
+            admin_redirect('sales/receive_payments');
+        } else {
+            $this->data['warehouses'] = $this->site->getWarehouses();
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['billers'] = $this->site->getBillers();
+            $this->data['users'] = $this->site->getAllUsers();
+            $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sale')), array('link' => admin_url('sales/receive_payments'), 'page' => lang('receive_payments')), array('link' => '#', 'page' => lang('add_receive_payment')));
+            $meta = array('page_title' => lang('add_receive_payment'), 'bc' => $bc);
+            $this->page_construct('sales/add_receive_payment', $meta, $this->data);
+        }
+    }
+    
+    public function edit_receive_payment($id = false){
+        $this->bpas->checkPermissions();
+        $this->form_validation->set_message('is_natural_no_zero', $this->lang->line("no_zero_required"));
+        $this->form_validation->set_rules('biller', $this->lang->line("biller"), 'required');
+        $this->form_validation->set_rules('from_date', $this->lang->line("from_date"), 'required');
+        $this->form_validation->set_rules('to_date', $this->lang->line("to_date"), 'required');
+        if ($this->form_validation->run() == true) {
+            if ($this->Owner || $this->Admin  || $this->bpas->GP['receive_payments-date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = ($this->Settings->date_with_time==0 ? date('Y-m-d') : date('Y-m-d H:i:s'));
+            }
+            $biller_id = $this->input->post('biller');
+            $paid_by = $this->input->post('paid_by') ? json_encode($this->input->post('paid_by')) : "";
+            $received_by = $this->input->post('received_by');
+            $type = $this->input->post('type');
+            $note = $this->input->post('note');
+            $from_date = $this->bpas->fld(trim($this->input->post('from_date')));
+            $to_date = $this->bpas->fld(trim($this->input->post('to_date')));
+            $i = isset($_POST['payment_id']) ? sizeof($_POST['payment_id']) : 0;
+            $total = 0;
+            $items = false;
+            for ($r = 0; $r < $i; $r++) {
+                $payment_id = $_POST['payment_id'][$r];
+                $payment_date = $_POST['payment_date'][$r];
+                $sale_ref = $_POST['sale_ref'][$r];
+                $payment_ref = $_POST['payment_ref'][$r];
+                $payment_paid_by = $_POST['payment_paid_by'][$r];
+                $payment_amount = $_POST['payment_amount'][$r];
+                $payment_created_by = $_POST['payment_created_by'][$r];
+                $customer = $_POST['customer'][$r];
+                $items[] = array(
+                    'receive_id' => $id,
+                    'payment_id' => $payment_id,
+                    'payment_date' => $payment_date,
+                    'sale_ref' => $sale_ref,
+                    'payment_ref' => $payment_ref,
+                    'payment_paid_by' => $payment_paid_by,
+                    'payment_amount' => $payment_amount,
+                    'payment_created_by' => $payment_created_by,
+                    'customer' => $customer,
+                    
+                );
+                $total += $payment_amount;
+            }
+            if (!$items) {
+                $this->form_validation->set_rules('payment', lang("order_items"), 'required');
+            } else {
+                krsort($items);
+            }
+            $reference_no = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('rp',$biller_id);
+            $data = array(
+                'date' => $date,
+                'biller_id' => $biller_id,
+                'reference_no' => $reference_no,
+                'from_date' => $from_date,
+                'to_date' => $to_date,
+                'received_by' => $received_by,
+                'paid_by' => $paid_by,
+                'type' => $type,
+                'amount' => $total,
+                'note' => $note,
+                'updated_by' => $this->session->userdata('user_id'),
+                'updated_at' => date('Y-m-d H:i:s'),
+            );
+            if ($_FILES['document']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload('document')) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $attachment = $this->upload->file_name;
+                $data['attachment'] = $attachment;
+            }
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->updateReceivePyament($id,$data,$items)) {  
+            $this->session->set_flashdata('message', $this->lang->line("receive_payment_edited"));          
+            admin_redirect('sales/receive_payments');
+        } else {
+            $receive_payment = $this->sales_model->getReceivePaymentByID($id);
+            if($receive_payment->status != "pending"){
+                $this->session->set_flashdata('error', lang('receive_payment_cannot_edit'));
+                redirect(isset($_SERVER["HTTP_REFERER"]) ? $_SERVER["HTTP_REFERER"] : 'welcome');
+            }
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['billers'] = $this->site->getBillers();
+            $this->data['users'] = $this->site->getAllUsers();
+            $this->data['receive_payment'] = $receive_payment;
+            $this->data['cash_accounts']= $this->site->getCashAccounts();
+            $this->data['receive_payment_items'] = $this->sales_model->getReceivePaymentItems($id);
+            $bc = array(array('link' => admin_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sale')), array('link' => admin_url('sales/receive_payments'), 'page' => lang('receive_payments')), array('link' => '#', 'page' => lang('edit_receive_payment')));
+            $meta = array('page_title' => lang('edit_receive_payment'), 'bc' => $bc);
+            $this->page_construct('sales/edit_receive_payment', $meta, $this->data);
+        }
+    }
+    
+    public function delete_receive_payment($id = null)
+    {
+        $this->bpas->checkPermissions('delete_receive_payment', true);
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $receive_payment = $this->sales_model->getReceivePaymentByID($id);
+        if($receive_payment->status != "pending"){
+            $this->session->set_flashdata('error', lang('receive_payment_cannot_delete'));
+            redirect(isset($_SERVER["HTTP_REFERER"]) ? $_SERVER["HTTP_REFERER"] : 'welcome');
+        }
+        if ($this->sales_model->deleteReceivePayment($id)) {
+            if ($this->input->is_ajax_request()) {
+                echo lang("receive_payment_deleted");
+                die();
+            }
+            $this->session->set_flashdata('message', lang('receive_payment_deleted'));
+            admin_redirect('sales/receive_payments');
+        }
+    }
+    
+    public function receive_payment_actions()
+    {
+        if (!$this->Owner && !$this->Admin && !$this->GP['bulk_actions']) {
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        $this->form_validation->set_rules('form_action', lang("form_action"), 'required');
+        if ($this->form_validation->run() == true) {
+            if (!empty($_POST['val'])) {
+                if ($this->input->post('form_action') == 'delete') {
+                    $this->bpas->checkPermissions('delete_receive_payment', true);
+                    $deleted = 0;
+                    foreach ($_POST['val'] as $id) {
+                        $receive_payment = $this->sales_model->getReceivePaymentByID($id);
+                        if($receive_payment->status == "pending"){
+                            $this->sales_model->deleteReceivePayment($id);
+                            $deleted = 1;
+                        }
+                    }
+                    if($deleted > 0){
+                        $this->session->set_flashdata('message', $this->lang->line("receive_payments_deleted"));
+                    }else{
+                        $this->session->set_flashdata('error', lang('receive_payment_cannot_delete'));
+                    }
+                    redirect($_SERVER["HTTP_REFERER"]);
+
+                }else if ($this->input->post('form_action') == 'approve') {
+                    $this->bpas->checkPermissions('approve_receive_payment', true);
+                    $user = $this->site->getUserByID($this->session->userdata('user_id'));
+                    $data["status"] = "approved";
+                    $data["approved_by"] = $this->session->userdata('user_id');
+                    $data["approved_name"] = $user->last_name.' '.$user->first_name;
+                    if($this->sales_model->updateMultiReceiveStatus($_POST['val'],$data)){
+                        $this->session->set_flashdata('message', $this->lang->line("status_updated"));
+                    }else{
+                        $this->session->set_flashdata('message', $this->lang->line("cannot_update"));
+                    }
+                    redirect($_SERVER["HTTP_REFERER"]);
+                } elseif ($this->input->post('form_action') == 'export_excel') {
+                    $this->load->library('excel');
+                    $this->excel->setActiveSheetIndex(0);
+                    $this->excel->getActiveSheet()->setTitle(lang('receive_payments'));
+                    $this->excel->getActiveSheet()->SetCellValue('A1', lang('date'));
+                    $this->excel->getActiveSheet()->SetCellValue('B1', lang('reference_no'));
+                    $this->excel->getActiveSheet()->SetCellValue('C1', lang('from_date'));
+                    $this->excel->getActiveSheet()->SetCellValue('D1', lang('to_date'));
+                    $this->excel->getActiveSheet()->SetCellValue('E1', lang('amount'));
+                    $this->excel->getActiveSheet()->SetCellValue('F1', lang('created_by'));
+                    $this->excel->getActiveSheet()->SetCellValue('G1', lang('checked_by'));
+                    $this->excel->getActiveSheet()->SetCellValue('H1', lang('approved_by'));
+                    $this->excel->getActiveSheet()->SetCellValue('I1', lang('verified_by'));
+                    $this->excel->getActiveSheet()->SetCellValue('J1', lang('status'));
+                    $this->db->select("
+                                    receive_payments.id as id,
+                                    DATE_FORMAT(".$this->db->dbprefix('receive_payments').".date, '%Y-%m-%d %T') as date,
+                                    receive_payments.reference_no,
+                                    DATE_FORMAT(".$this->db->dbprefix('receive_payments').".from_date, '%Y-%m-%d') as from_date,
+                                    DATE_FORMAT(".$this->db->dbprefix('receive_payments').".to_date, '%Y-%m-%d') as to_date,
+                                    receive_payments.amount,
+                                    CONCAT(".$this->db->dbprefix('users').".last_name,' ',".$this->db->dbprefix('users').".first_name) as created_by,
+                                    receive_payments.checked_name,
+                                    receive_payments.approved_name,
+                                    receive_payments.verified_name,
+                                    receive_payments.status
+                                ")
+                            ->join('users','users.id = receive_payments.created_by','left');
+                    $this->db->where_in("receive_payments.id",$_POST['val']);
+                    $q = $this->db->get("receive_payments");
+                    $row = 2;
+                    if ($q->num_rows() > 0) {
+                        foreach (($q->result()) as $receive_payment) {
+                            $this->excel->getActiveSheet()->SetCellValue('A' . $row, $this->bpas->hrld($receive_payment->date));
+                            $this->excel->getActiveSheet()->SetCellValue('B' . $row, $receive_payment->reference_no);
+                            $this->excel->getActiveSheet()->SetCellValue('C' . $row, $this->bpas->hrsd($receive_payment->from_date));
+                            $this->excel->getActiveSheet()->SetCellValue('D' . $row, $this->bpas->hrsd($receive_payment->to_date));
+                            $this->excel->getActiveSheet()->SetCellValue('E' . $row, $this->bpas->formatDecimal($receive_payment->amount));
+                            $this->excel->getActiveSheet()->SetCellValue('F' . $row, $receive_payment->created_by);
+                            $this->excel->getActiveSheet()->SetCellValue('G' . $row, $receive_payment->checked_name);
+                            $this->excel->getActiveSheet()->SetCellValue('H' . $row, $receive_payment->approved_name);
+                            $this->excel->getActiveSheet()->SetCellValue('I' . $row, $receive_payment->verified_name);
+                            $this->excel->getActiveSheet()->SetCellValue('J' . $row, lang($receive_payment->status));
+                            $row++;
+                        }
+                    }
+                    $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('C')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('D')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('E')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('F')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('G')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('H')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('I')->setWidth(20);
+                    $this->excel->getActiveSheet()->getColumnDimension('J')->setWidth(20);
+                    $this->excel->getDefaultStyle()->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $filename = 'receive_payments_' . date('Y_m_d_H_i_s');
+                    $this->load->helper('excel');
+                    create_excel($this->excel, $filename);
+                }
+            } else {
+                $this->session->set_flashdata('error', $this->lang->line("no_quote_selected"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+        } else {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+    }
+    
+    public function modal_view_receive_payment($id = false){
+        $this->bpas->checkPermissions('receive_payments', true);
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $receive_payment = $this->sales_model->getReceivePaymentByID($id);
+        $this->data['receive_payment'] = $receive_payment;
+        $this->data['receive_payment_items'] = $this->sales_model->getReceivePaymentItems($id);
+        $this->data['created_by'] = $this->site->getUserByID($receive_payment->created_by);
+        $this->data['biller'] = $this->site->getCompanyByID($receive_payment->biller_id);
+        $this->load->view($this->theme . 'sales/modal_view_receive_payment', $this->data);
+    }
+    public function get_sale_payments(){
+        $biller_id      = $this->input->get('biller_id');
+        $received_by    = $this->input->get('received_by');
+        $paid_by        = $this->input->get('paid_by',false);
+        $type           = $this->input->get('type',false);
+        $from_date      = $this->bpas->fld(trim($this->input->get('from_date')));
+        $to_date        = $this->bpas->fld(trim($this->input->get('to_date')));
+        $receive_id     = $this->input->get('receive_id');
+        $sale_payment   = $this->sales_model->getSalePayments($biller_id,$received_by,$from_date,$to_date,$paid_by,$type,$receive_id);
+        echo json_encode($sale_payment);
+    }
+    public function update_receive_status($id = null, $status = false)
+    {
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $update_by = $this->site->getUserByID($this->session->userdata('user_id'));
+        $data["status"] = $status;
+        if($status=="checked"){
+            $data["checked_by"] = $this->session->userdata('user_id');
+            $data["checked_name"] = $update_by->last_name.' '.$update_by->first_name;
+        }else if($status=="verified"){
+            $data["verified_by"] = $this->session->userdata('user_id');
+            $data["verified_name"] = $update_by->last_name.' '.$update_by->first_name;
+        }else if($status=="approved"){
+            $data["approved_by"] = $this->session->userdata('user_id');
+            $data["approved_name"] = $update_by->last_name.' '.$update_by->first_name;
+        }
+        if ($this->sales_model->updateReceiveStatus($id,$data)) {
+            if ($this->input->is_ajax_request()) {
+                $this->bpas->send_json(['error' => 0, 'msg' => lang('status_updated')]);
+            }
+            $this->session->set_flashdata('message', lang('status_updated'));
+            redirect('welcome');
+        }else{
+            $this->session->set_flashdata('error', lang('cannot_update'));
+            $this->bpas->md();
+        }
+    }
+    public function view_agreement($id = null)
+    {
+        $this->bpas->checkPermissions('index', true);
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $inv                 = $this->sales_model->getInvoiceByID($id);
+        if (!$this->session->userdata('view_right')) {
+            $this->bpas->view_rights($inv->created_by, true);
+        }
+        $customer   = $this->site->getCompanyByID($inv->customer_id);
+        $biller     = $this->site->getCompanyByID($inv->biller_id);
+        $this->data['customer']  = $customer;
+        $this->data['biller']    = $biller;
+        $this->data['inv']       = $inv;
+        $bc = array(array('link' => admin_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sale')), array('link' => admin_url('sales/receive_payments'), 'page' => lang('agreement')), array('link' => '#', 'page' => lang('agreement')));
+        $meta = array('page_title' => lang('agreement'), 'bc' => $bc);
+        $this->page_construct('sales/view_agreement', $meta, $this->data);
+    }
+    public function get_project()
+    {
+        if($this->Settings->project == 1){
+            $id = $this->input->get("biller");
+            $project_id = $this->input->get("project");
+            $rows = $this->site->getAllProjectByBillerID($id);
+            $user = $this->site->getUser($this->session->userdata("user_id"));
+            $project = json_decode($user->project_ids);
+            $pl = array(lang('select')." ".lang('project'));
+            if ($this->Owner || $this->Admin || $project[0] === 'all') {
+                foreach($rows as $row){
+                    $pl[$row->id] = $row->name;
+                }
+            }else{
+                foreach($rows as $row){
+                    if(in_array($row->id, $project)){
+                        $pl[$row->project_id] = $row->project_name;
+                    }
+                }
+            }
+            $opt = form_dropdown('project', $pl, (isset($_POST['project']) ? $_POST['project'] : $project_id), 'id="project" class="form-control"');
+            echo json_encode(array("result" => $opt));
+        }else{
+            echo json_encode(false);
+        }
+    }
+    //------concrete------
+    public function sale_concretes($warehouse_id = null, $biller_id = NULL)
+    {
+        $this->bpas->checkPermissions('index');
+        if($warehouse_id == 0){
+            $warehouse_id = null;
+        }
+        if($biller_id == 0){
+            $biller_id = null;
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $this->data['warehouses'] = $this->site->getWarehouses();
+        $this->data['warehouse'] = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+        $this->data['billers'] = $this->site->getBillers();
+        $this->data['biller'] = $biller_id ? $this->site->getCompanyByID($biller_id) : null;    
+        $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sale')), array('link' => '#', 'page' => lang('sale_concretes')));
+        $meta = array('page_title' => lang('sale_concretes'), 'bc' => $bc);
+        $this->page_construct('sales/sale_concretes', $meta, $this->data);
+    }
+    
+    public function getSaleConcretes($warehouse_id = null, $biller_id = NULL)
+    {
+        $this->bpas->checkPermissions('index');
+        $payments_link = anchor('sales/payments/$1', '<i class="fa fa-money"></i> ' . lang('view_payments'), 'data-toggle="modal" data-backdrop="static" data-keyboard="false" class="view_payment" data-target="#myModal"');
+        $add_payment_link = anchor('sales/add_payment/$1', '<i class="fa fa-money"></i> ' . lang('add_payment'), 'data-toggle="modal" data-backdrop="static" data-keyboard="false" class="add_payment" data-target="#myModal"');
+        $edit_link = anchor('sales/edit_sale_concrete/$1', '<i class="fa fa-edit"></i> ' . lang('edit_sale_concrete'), ' class="edit_sale_concrete" ');
+        $delete_link = "<a href='#' class='po delete_sale' title='<b>" . $this->lang->line("delete_sale_concrete") . "</b>' data-content=\"<p>"
+        . lang('r_u_sure') . "</p><a class='btn btn-danger' href='" . admin_url('sales/delete_sale_concrete/$1') . "'>"
+        . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+        . lang('delete_sale_concrete') . "</a>";
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+        . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+        . lang('actions') . ' <span class="caret"></span></button>
+                    <ul class="dropdown-menu pull-right" role="menu">
+                        <li>' . $payments_link . '</li>
+                        <li>' . $add_payment_link . '</li>
+                        <li>' . $edit_link . '</li>
+                        <li>' . $delete_link . '</li>
+                    </ul>
+                </div></div>';
+        $this->load->library('datatables');
+        
+        $this->datatables->select("
+                                    sales.id as id,
+                                    DATE_FORMAT(date, '%Y-%m-%d %T') as date,
+                                    reference_no,
+                                    customer,
+                                    addresses.name as location,
+                                    grand_total,
+                                    IFNULL(total_return,0) as total_return,
+                                    IFNULL(bpas_payments.paid + IFNULL(total_return_paid,0),0) as paid,
+                                    IFNULL(bpas_payments.discount,0) as discount,
+                                    ROUND((grand_total-(IFNULL(bpas_payments.paid,0))-(IFNULL(bpas_payments.discount,0))-(IFNULL(bpas_return.total_return + total_return_paid,0))),".$this->Settings->decimals.") as balance,
+                                    IF (
+                                        (
+                                            round((grand_total-(IFNULL(bpas_payments.paid,0))-(IFNULL(bpas_payments.discount,0))-(IFNULL(bpas_return.total_return + total_return_paid,0))),".$this->Settings->decimals.") = 0
+                                        ),
+                                        'paid',
+                                        IF (
+                                        (
+                                            (grand_total-(IFNULL(bpas_payments.paid,0))-(IFNULL(bpas_payments.discount,0))-(IFNULL(bpas_return.total_return + total_return_paid,0))) = grand_total
+                                        ),
+                                        'pending',
+                                        'partial'
+                                    )) AS payment_status,
+                                    attachment
+                                ")
+                            ->from('sales')
+                            ->join('addresses','addresses.id = sales.zone_id','left')
+                            ->join('(SELECT
+                                        sale_id,
+                                        SUM(ABS(grand_total)) AS total_return,
+                                        SUM(paid) AS total_return_paid
+                                    FROM
+                                        '.$this->db->dbprefix('sales').' WHERE sale_status = "returned"
+                                    GROUP BY
+                                        sale_id) as bpas_return', 'bpas_return.sale_id=sales.id', 'left')
+                            ->join('(SELECT
+                                        sale_id,
+                                        IFNULL(SUM(amount),0) AS paid,
+                                        IFNULL(SUM(discount),0) AS discount
+                                    FROM
+                                        '.$this->db->dbprefix('payments').'
+                                        
+                                    GROUP BY
+                                        sale_id) as bpas_payments', 'bpas_payments.sale_id=sales.id', 'left');
+        $this->datatables->where('sales.module_type', "concrete");
+        if ($warehouse_id) {
+            $this->datatables->where('sales.warehouse_id', $warehouse_id);
+        }
+        if ($biller_id) {
+            $this->datatables->where('sales.biller_id', $biller_id);
+        }   
+        if (!$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where('sales.created_by', $this->session->userdata('user_id'));
+        }
+        if (!$this->Owner && !$this->Admin && $this->session->userdata('biller_id')) { 
+            $this->datatables->where('sales.biller_id', $this->session->userdata('biller_id'));
+        }
+        if (!$this->Owner && !$this->Admin && $this->session->userdata('warehouse_id')) { 
+            $this->datatables->where_in('sales.warehouse_id', json_decode($this->session->userdata('warehouse_id')));
+        }
+        $this->datatables->add_column("Actions", $action, "id");
+        echo $this->datatables->generate();
+    }
+    //--------------fuel--------------
+    public function fuel_customers($warehouse_id = null,$biller_id = NULL)
+    {
+        $this->bpas->checkPermissions("fuel_sale-index");
+        if($warehouse_id == 0){
+            $warehouse_id = null;
+        }
+        if($biller_id == 0){
+            $biller_id = null;
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $this->data['warehouses'] = $this->site->getWarehouses();
+        $this->data['warehouse'] = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+        $this->data['billers'] = $this->site->getBillers();
+        $this->data['biller'] = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+        $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sale')), array('link' => '#', 'page' => lang('fuel_customers')));
+        $meta = array('page_title' => lang('fuel_customers'), 'bc' => $bc);
+        $this->page_construct('sales/fuel_customers', $meta, $this->data);
+    }
+    
+    public function getFuelCustomers($warehouse_id = null, $biller_id = null)
+    {
+        $this->bpas->checkPermissions("fuel_sale-index");
+        $this->load->library('datatables');
+        
+        $detail_link = anchor('admin/sales/view_fuel_customer/$1', '<i class="fa fa-file-text-o"></i> ' . lang('fuel_customer_details'), 'data-toggle="modal" data-backdrop="static" data-keyboard="false" data-target="#myModal"');
+        
+        $edit_link = '';
+        if(($this->Admin || $this->Owner) || $this->GP['sales-fuel_sale-edit']){
+            $edit_link = anchor('admin/sales/edit_fuel_customer/$1', '<i class="fa fa-edit"></i> ' . lang('edit_fuel_customer'), ' class="edit_fuel_customer" ');
+        }
+        $delete_link = '';
+        if(($this->Admin || $this->Owner) || $this->GP['sales-fuel_sale-delete']){
+            $delete_link = "<a href='#' class='po fuel-delete delete_fuel_customer' title='<b>" . lang("delete_fuel_customer") . "</b>' data-content=\"<p>"
+            . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete_fuel_customer/$1') . "'>"
+            . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+            . lang('delete_fuel_customer') . "</a>";
+        }
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+                    . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+                    . lang('actions') . ' <span class="caret"></span></button>
+                        <ul class="dropdown-menu pull-right" role="menu">
+                            <li>' . $detail_link . '</li>
+                            <li>' . $edit_link . '</li>
+                            <li>' . $delete_link . '</li>
+                        </ul>
+                    </div></div>';
+        
+        $this->datatables->select("
+                        fuel_customers.id as id,
+                        DATE_FORMAT(".$this->db->dbprefix("fuel_customers").".date, '%Y-%m-%d %T') as date,
+                        fuel_customers.reference,
+                        companies.name as customer,
+                        CONCAT(".$this->db->dbprefix("users").".last_name,' ',".$this->db->dbprefix("users").".first_name) as salesman,
+                        IFNULL(bpas_fuel_customer_items.quantity,0) as quantity,
+                        IFNULL(".$this->db->dbprefix("fuel_customers").".grand_total,0) as grand_total,
+                        IF (".$this->db->dbprefix("fuel_customers").".status = 'completed','completed', IF (bpas_fuel_customer_items.fuel_sale_id > 0,'cleared','pending')) AS status,
+                        fuel_customers.attachment
+                    ", false)
+            ->from("fuel_customers")
+            ->join("(SELECT 
+                            fuel_customer_id,
+                            SUM(quantity) as quantity,
+                            SUM(fuel_sale_id) as fuel_sale_id
+                        FROM ".$this->db->dbprefix("fuel_customer_items")."
+                        GROUP BY fuel_customer_id) as bpas_fuel_customer_items","bpas_fuel_customer_items.fuel_customer_id=fuel_customers.id","left")
+            ->join("users", "users.id=fuel_customers.saleman_id", "left")
+            ->join("companies", "companies.id=fuel_customers.customer_id", "left")
+            ->add_column("Actions", $action, "id");
+        
+        if ($biller_id) {
+            $this->datatables->where('fuel_customers.biller_id', $biller_id);
+        }
+        if ($warehouse_id) {
+            $this->datatables->where('fuel_customers.warehouse_id', $warehouse_id);
+        }
+        if (!$this->Owner && !$this->Admin && $this->session->userdata('biller_id')) {
+            $this->datatables->where('fuel_customers.biller_id', $this->session->userdata('biller_id'));
+        }
+        if (!$this->Owner && !$this->Admin && $this->session->userdata('warehouse_id')) {
+            $this->db->where_in('fuel_customers.warehouse_id', json_decode($this->session->userdata('warehouse_id')));
+        }
+        if (!$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where('fuel_customers.created_by', $this->session->userdata('user_id'));
+        }
+        echo $this->datatables->generate();
+    }
+    public function add_fuel_customer()
+    {
+        $this->bpas->checkPermissions('fuel_sale-add', true);
+        $this->form_validation->set_rules('customer', lang("customer"), 'required');    
+        $this->form_validation->set_rules('saleman_id', lang("saleman"), 'required');
+        if ($this->form_validation->run() == true) {
+            $biller_id = $this->input->post("biller");
+            $warehouse_id = $this->input->post("warehouse");
+            $note = $this->input->post('note');
+            $saleman_id = $this->input->post("saleman_id");
+            $project_id = $this->input->post("project");
+            $customer_id = $this->input->post("customer");
+            $time_id = $this->input->post('time_id');
+            $reference = $this->input->post('reference') ? $this->input->post('reference') : $this->site->getReference('cfuel',$biller_id);
+            if ($this->Owner || $this->Admin || $this->GP['sales-fuel_sale-date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = ($this->Settings->date_with_time==0 ? date('Y-m-d') : date('Y-m-d H:i:s'));
+            }
+            $accTrans = false;
+            $stockmoves = false;
+            $grand_total = 0;
+            $tanks = isset($_POST['tank_id']) ? sizeof($_POST['tank_id']) : 0;
+            for ($r = 0; $r < $tanks; $r++) {
+                $tank_id = $_POST['tank_id'][$r];
+                $nozzle_id = $_POST['nozzle_id'][$r];
+                $nozzle_no = $_POST['nozzle_no'][$r];
+                $product_id = $_POST['product_id'][$r];
+                $unit_price = $_POST['unit_price'][$r];
+                $quantity = $_POST['quantity'][$r];
+                $subtotal = $unit_price * $quantity;
+                $truck_id = $_POST['truck_id'][$r];
+                if($quantity > 0 && $nozzle_id > 0){
+                    $items[] = array(
+                        'tank_id' => $tank_id,
+                        'nozzle_id' => $nozzle_id,
+                        'nozzle_no' => $nozzle_no,
+                        'product_id' => $product_id,
+                        'unit_price' => $unit_price,
+                        'quantity' => $quantity,
+                        'subtotal' => $subtotal,
+                        'truck_id' => $truck_id
+                    );
+                    $grand_total += $subtotal;
+                    
+                    $product_details = $this->site->getProductByID($product_id);
+                    $unit = $this->site->getProductUnit($product_details->id, $product_details->unit);
+                    $stockmoves[] = array(
+                        'transaction' => 'FuelCustomer',
+                        'reference_no' => $reference,
+                        'product_id' => $product_id,
+                        'product_code' => $product_details->code,
+                        'product_type' => $product_details->type,
+                        'quantity' => $quantity * (-1),
+                        'unit_quantity' => $unit->unit_qty,
+                        'unit_code' => $unit->code,
+                        'unit_id' => $product_details->unit,
+                        'warehouse_id' => $warehouse_id,
+                        'date' => $date,
+                        'real_unit_cost' => $product_details->cost,
+                        'user_id' => $this->session->userdata('user_id'),
+                    );
+                    //========accounting=========//
+                        $productAcc = $this->site->getProductAccByProductId($product_id);
+                        if($this->Settings->module_account == 1){       
+                            $accTrans[] = array(
+                                'tran_type' => 'FuelCustomer',
+                                'tran_date' => $date,
+                                'reference_no' => $reference,
+                                'account_code' => $productAcc->stock_account,
+                                'amount' => -($product_details->cost * $quantity),
+                                'narrative' => 'Product Code: '.$product_details->code.'#'.'Qty: '.$quantity.'#'.'Cost: '.$product_details->cost,
+                                'description' => $note,
+                                'biller_id' => $biller_id,
+                                'project_id' => $project_id,
+                                'created_by' => $this->session->userdata('user_id'),
+                                'customer_id' => $customer_id,
+                            );
+                            $accTrans[] = array(
+                                'tran_type' => 'FuelCustomer',
+                                'tran_date' => $date,
+                                'reference_no' => $reference,
+                                'account_code' => $productAcc->cost_acc,
+                                'amount' => ($product_details->cost * $quantity),
+                                'narrative' => 'Product Code: '.$product_details->code.'#'.'Qty: '.$quantity.'#'.'Cost: '.$product_details->cost,
+                                'description' => $note,
+                                'biller_id' => $biller_id,
+                                'project_id' => $project_id,
+                                'created_by' => $this->session->userdata('user_id'),
+                                'customer_id' => $customer_id,
+                            );
+                        }
+                    //============end accounting=======//
+                }
+            }
+            if (empty($items)) {
+                $this->form_validation->set_rules('tank_order', lang("tank_order"), 'required');
+            }
+            $data = array(
+                'date' => $date,
+                'reference' => $reference,
+                'biller_id'=> $biller_id,
+                'project_id' => $project_id,
+                'customer_id'=> $customer_id,
+                'saleman_id'=> $saleman_id,
+                'warehouse_id'=> $warehouse_id,
+                'grand_total'=> $grand_total,
+                'note' => $note,
+                'created_by'=> $this->session->userdata('user_id'),
+                'time_id' => $time_id
+            );
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+            
+            if (empty($tanks)) {
+                $this->form_validation->set_rules('tank_order', lang("tank_order"), 'required');
+            }
+        }else if($this->input->post('add_fuel_customer')){
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->addFuelCustomer($data, $items, $stockmoves, $accTrans)) {
+            $this->session->set_userdata('remove_fcls', 1);
+            $this->session->set_flashdata('message', lang("fuel_customer_added"));
+            admin_redirect('sales/fuel_customers');
+        }else{
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $this->data['billers'] = $this->site->getAllCompanies('biller');
+            $this->data['warehouses'] = $this->site->getWarehouses();
+            $this->data['salemans'] = $this->site->getSalemans();
+            $this->data['tanks'] = $this->site->getTanks();
+            $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sales')), array('link' => admin_url('sales/fuel_customers'), 'page' => lang('fuel_customers')), array('link' => '#', 'page' => lang('add_fuel_customer')));
+            $meta = array('page_title' => lang('add_fuel_customer'), 'bc' => $bc);
+            $this->page_construct('sales/add_fuel_customer', $meta, $this->data);
+        }
+    }
+    
+    public function edit_fuel_customer($id = NULL)
+    {
+        $this->bpas->checkPermissions('fuel_sale-edit', true);
+        $this->form_validation->set_rules('customer', lang("customer"), 'required');    
+        $this->form_validation->set_rules('saleman_id', lang("saleman"), 'required');
+        if ($this->form_validation->run() == true) {
+            $biller_id = $this->input->post("biller");
+            $project_id = $this->input->post("project");
+            $warehouse_id = $this->input->post("warehouse");
+            $note = $this->input->post('note');
+            $saleman_id = $this->input->post("saleman_id");
+            $customer_id = $this->input->post("customer");
+            $time_id = $this->input->post('time_id');
+            $reference = $this->input->post('reference') ? $this->input->post('reference') : $this->site->getReference('cfuel',$biller_id);
+            if ($this->Owner || $this->Admin || $this->GP['sales-fuel_sale-date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = ($this->Settings->date_with_time==0 ? date('Y-m-d') : date('Y-m-d H:i:s'));
+            }
+            $accTrans = false;
+            $stockmoves = false;
+            $grand_total = 0;
+            $tanks = isset($_POST['tank_id']) ? sizeof($_POST['tank_id']) : 0;
+            for ($r = 0; $r < $tanks; $r++) {
+                $tank_id = $_POST['tank_id'][$r];
+                $nozzle_id = $_POST['nozzle_id'][$r];
+                $nozzle_no = $_POST['nozzle_no'][$r];
+                $product_id = $_POST['product_id'][$r];
+                $unit_price = $_POST['unit_price'][$r];
+                $quantity = $_POST['quantity'][$r];
+                $subtotal = $unit_price * $quantity;
+                $truck_id = $_POST['truck_id'][$r];
+                $fuel_sale_id = $_POST['fuel_sale_id'][$r];
+                if($quantity > 0 && $nozzle_id > 0){
+                    $items[] = array(
+                        'fuel_customer_id' => $id,
+                        'tank_id' => $tank_id,
+                        'nozzle_id' => $nozzle_id,
+                        'nozzle_no' => $nozzle_no,
+                        'product_id' => $product_id,
+                        'unit_price' => $unit_price,
+                        'quantity' => $quantity,
+                        'subtotal' => $subtotal,
+                        'truck_id' => $truck_id,
+                        'fuel_sale_id' => $fuel_sale_id
+                    );
+                    $grand_total += $subtotal;
+                    
+                    $product_details = $this->site->getProductByID($product_id);
+                    $unit = $this->site->getProductUnit($product_details->id, $product_details->unit);
+                    $stockmoves[] = array(
+                        'transaction' => 'FuelCustomer',
+                        'transaction_id' => $id,
+                        'reference_no' => $reference,
+                        'product_id' => $product_id,
+                        'product_code' => $product_details->code,
+                        'product_type' => $product_details->type,
+                        'quantity' => $quantity * (-1),
+                        'unit_quantity' => $unit->unit_qty,
+                        'unit_code' => $unit->code,
+                        'unit_id' => $product_details->unit,
+                        'warehouse_id' => $warehouse_id,
+                        'date' => $date,
+                        'real_unit_cost' => $product_details->cost,
+                        'user_id' => $this->session->userdata('user_id'),
+                    );
+                    //========accounting=========//
+                        $productAcc = $this->site->getProductAccByProductId($product_id);
+                        if($this->Settings->accounting == 1){       
+                            $accTrans[] = array(
+                                'tran_type' => 'FuelCustomer',
+                                'tran_no' => $id,
+                                'tran_date' => $date,
+                                'reference_no' => $reference,
+                                'account_code' => $productAcc->stock_account,
+                                'amount' => -($product_details->cost * $quantity),
+                                'narrative' => 'Product Code: '.$product_details->code.'#'.'Qty: '.$quantity.'#'.'Cost: '.$product_details->cost,
+                                'description' => $note,
+                                'biller_id' => $biller_id,
+                                'project_id' => $project_id,
+                                'created_by' => $this->session->userdata('user_id'),
+                                'customer_id' => $customer_id,
+                            );
+                            $accTrans[] = array(
+                                'tran_type' => 'FuelCustomer',
+                                'tran_no' => $id,
+                                'tran_date' => $date,
+                                'reference_no' => $reference,
+                                'account_code' => $productAcc->costing_account,
+                                'amount' => ($product_details->cost * $quantity),
+                                'narrative' => 'Product Code: '.$product_details->code.'#'.'Qty: '.$quantity.'#'.'Cost: '.$product_details->cost,
+                                'description' => $note,
+                                'biller_id' => $biller_id,
+                                'project_id' => $project_id,
+                                'created_by' => $this->session->userdata('user_id'),
+                                'customer_id' => $customer_id,
+                            );
+                        }
+                    //============end accounting=======//
+                }
+            }
+            if (empty($items)) {
+                $this->form_validation->set_rules('tank_order', lang("tank_order"), 'required');
+            }
+            $data = array(
+                'date' => $date,
+                'reference' => $reference,
+                'biller_id'=> $biller_id,
+                'project_id' => $project_id,
+                'customer_id'=> $customer_id,
+                'saleman_id'=> $saleman_id,
+                'warehouse_id'=> $warehouse_id,
+                'grand_total'=> $grand_total,
+                'note' => $note,
+                'updated_by'=> $this->session->userdata('user_id'),
+                'updated_at'=> date("Y-m-d H:i"),
+                'time_id' => $time_id
+            );
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+            if (empty($tanks)) {
+                $this->form_validation->set_rules('tank_order', lang("tank_order"), 'required');
+            }
+        }else if($this->input->post('edit_fuel_customer')){
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->updateFuelCustomer($id, $data, $items, $stockmoves, $accTrans)) {
+            $this->session->set_userdata('remove_fcls', 1);
+            $this->session->set_flashdata('message', lang("fuel_customer_updated"));
+            admin_redirect('sales/fuel_customers');
+        }else{
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $fuel_customer = $this->sales_model->getFuelCustomerByID($id);
+            if($fuel_customer->status == "completed"){
+                $this->session->set_flashdata('error', lang("cannot_edit_fuel_customer"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+            $customer_id = $fuel_customer->customer_id;
+            $customer_trucks = false;
+            if($customer_id){
+                $customer = $this->site->getCompanyByID($customer_id);
+                $customer_group = $this->site->getCustomerGroupByID($customer->customer_group_id);
+                if($this->config->item('customer_truck')){
+                    $customer_trucks = $this->sales_model->getCustomerTrucks($customer_id);
+                }
+            }
+            
+            $fuel_customer_items = $this->sales_model->getFuelCustomerItems($id);
+            $c = rand(100000, 9999999);
+            foreach ($fuel_customer_items as $fuel_customer_item) {
+                $row = json_decode('{}');
+                $ri = $c;
+                $nozzles = $this->sales_model->getTankNozzlesByTankID($fuel_customer_item->tank_id);
+                if($nozzles){
+                    foreach($nozzles as $nozzle){
+                        if($customer_id){
+                            /*if($this->Settings->customer_price == 1 && $customer_price = $this->sales_model->getCustomerPrice($nozzle->product_id,$customer_id)){
+                                if (isset($customer_price) && $customer_price != false) {
+                                    if($customer_price->price > 0){
+                                        $nozzle->unit_price = $customer_price->price;
+                                    }
+                                }
+                            } else */if ($customer->price_group_id) {
+                                if ($pr_group_price = $this->site->getProductGroupPrice($nozzle->product_id, $customer->price_group_id)) {
+                                    $nozzle->unit_price = $pr_group_price->price;
+                                }
+                            }
+                            $nozzle->unit_price = $nozzle->unit_price + (($nozzle->unit_price * $customer_group->percent) / 100);
+                        }
+                    }
+                }
+                $row->fuel_sale_id = $fuel_customer_item->fuel_sale_id;
+                $row->id = $fuel_customer_item->tank_id;
+                $row->code = $fuel_customer_item->tank_code;
+                $row->name = $fuel_customer_item->tank_name;
+                $row->nozzle_id = $fuel_customer_item->nozzle_id;
+                $row->product_id = $fuel_customer_item->product_id;
+                $row->nozzle_no = $fuel_customer_item->nozzle_no;
+                $row->quantity = $fuel_customer_item->quantity;
+                $row->unit_price = $fuel_customer_item->unit_price;
+                $row->truck_id = $fuel_customer_item->truck_id;
+                $row->subtotal = $fuel_customer_item->subtotal;
+                $pr[$ri] = array('id' => ($c), 'item_id' => $row->id, 'label' => $row->name . " (" . $row->code . ")", 'row' => $row, 'nozzles' => $nozzles, 'customer_trucks' => $customer_trucks);
+                $c++;
+            }
+            $this->data['id'] = $id;
+            $this->data['fuel_customer'] = $fuel_customer;
+            $this->data['fuel_customer_items'] = json_encode($pr);
+            $this->data['billers'] = $this->site->getAllCompanies('biller');
+            $this->data['projects'] = $this->site->getAllProjects();
+            $this->data['warehouses'] = $this->site->getWarehouses();
+            $this->data['times'] = $this->sales_model->getFuelTimes();
+            $this->data['salemans'] = $this->site->getSalemans();
+            $this->data['tanks'] = $this->site->getTanks();
+            $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('sales'), 'page' => lang('sales')), array('link' => admin_url('sales/fuel_customers'), 'page' => lang('fuel_customers')), array('link' => '#', 'page' => lang('edit_fuel_customer')));
+            $meta = array('page_title' => lang('edit_fuel_customer'), 'bc' => $bc);
+            $this->page_construct('sales/edit_fuel_customer', $meta, $this->data);
+        }
+    }
+    
+    public function delete_fuel_customer($id = null)
+    {
+        $this->bpas->checkPermissions("fuel_sale-delete");
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $fuel_sale_id = 0;
+        $fuel_customer = $this->sales_model->getFuelCustomerByID($id);
+        $fuel_customer_items = $this->sales_model->getFuelCustomerItems($id);
+        if($fuel_customer_items){
+            foreach($fuel_customer_items as $fuel_customer_item){
+                $fuel_sale_id += $fuel_customer_item->fuel_sale_id;
+            }
+        }
+        if($fuel_customer->status!="pending" || $fuel_sale_id > 0){
+            $this->session->set_flashdata('error', lang("cannot_delete_fuel_customer"));
+            redirect('sales/fuel_customers');
+        }else if ($this->sales_model->deleteFuelCustomer($id)) {
+            if ($this->input->is_ajax_request()) {
+                $this->bpas->send_json(['error' => 0, 'msg' => lang('fuel_customer_deleted')]);
+      
+            }
+            $this->session->set_flashdata('message', lang("fuel_customer_deleted"));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+    }
+    public function view_fuel_customer($id = null)
+    {
+        $this->bpas->checkPermissions('fuel_sale-index', true);
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $fuel_customer = $this->sales_model->getFuelCustomerByID($id);
+        $this->data['fuel_customer'] = $fuel_customer;
+        $this->data['fuel_customer_items'] = $this->sales_model->getFuelCustomerItems($id);
+        $this->data['customer'] = $this->site->getCompanyByID($fuel_customer->customer_id);
+        $this->data['biller'] = $this->site->getCompanyByID($fuel_customer->biller_id);
+        $this->data['salesman'] = $this->site->getUser($fuel_customer->saleman_id);
+        $this->data['warehouse'] = $this->site->getWarehouseByID($fuel_customer->warehouse_id);
+        $this->load->view($this->theme . 'sales/view_fuel_customer', $this->data);
+    }
+    public function fuel_customer_actions()
+    {
+        if (!$this->Owner && !$this->GP['bulk_actions']) {
+            $this->session->set_flashdata('warning', lang('access_denied'));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+        $this->form_validation->set_rules('form_action', lang("form_action"), 'required');
+        if ($this->form_validation->run() == true) {
+            if (!empty($_POST['val'])){
+                if ($this->input->post('form_action') == 'create_sale') {
+                    $ids = false; 
+                    $customer_id = "";
+                    foreach ($_POST['val'] as $id) {
+                        $row = $this->sales_model->getFuelCustomerByID($id);
+                        if(($customer_id == "" || $customer_id == $row->customer_id) && $row->status != "completed"){
+                            $customer_id = $row->customer_id;
+                            $ids[] = $id;
+                        }
+                        if(!$ids){
+                            $this->session->set_flashdata('error', lang("cannot_add_sale"));
+                            redirect($_SERVER["HTTP_REFERER"]);
+                        }
+                    }
+                    admin_redirect('sales/add?fuel_customer='.json_encode($ids));
+                }else if ($this->input->post('form_action') == 'delete') {
+                    $this->bpas->checkPermissions('delete');
+                    foreach ($_POST['val'] as $id) {
+                        $fuel_sale = $this->sales_model->getFuelCustomerByID($id);
+                        if($fuel_sale->status != "pending"){
+                            $this->session->set_flashdata('error', lang("fuel_customer_cannot_delete"));
+                            redirect($_SERVER["HTTP_REFERER"]);
+                        }
+                        $this->sales_model->deleteFuelCustomer($id);
+                    }
+                    $this->session->set_flashdata('message', lang("fuel_customer_deleted"));
+                    redirect($_SERVER["HTTP_REFERER"]);
+
+                } elseif ($this->input->post('form_action') == 'export_excel') {
+                    $this->load->library('excel');
+                    $this->excel->setActiveSheetIndex(0);
+                    $this->excel->getActiveSheet()->setTitle(lang('fuel_customer'));
+                    $this->excel->getActiveSheet()->SetCellValue('A1', lang('date'));
+                    $this->excel->getActiveSheet()->SetCellValue('B1', lang('reference_no'));
+                    $this->excel->getActiveSheet()->SetCellValue('C1', lang('biller'));
+                    $this->excel->getActiveSheet()->SetCellValue('D1', lang('warehouse'));
+                    $this->excel->getActiveSheet()->SetCellValue('E1', lang('saleman'));
+                    $this->excel->getActiveSheet()->SetCellValue('F1', lang('grand_total'));
+                    $this->excel->getActiveSheet()->SetCellValue('G1', lang('status'));
+                    $row = 2;
+                    foreach ($_POST['val'] as $id){
+                        $fuel_customer = $this->sales_model->getFuelCustomerByID($id);
+                        $salesman = $this->site->getUser($fuel_customer->saleman_id);
+                        $warehouse = $this->site->getWarehouseByID($fuel_customer->warehouse_id);
+                        $biller = $this->site->getCompanyByID($fuel_customer->biller_id);
+                        $this->excel->getActiveSheet()->SetCellValue('A' . $row, $this->bpas->hrld($fuel_customer->date));
+                        $this->excel->getActiveSheet()->SetCellValue('B' . $row, $fuel_customer->reference);
+                        $this->excel->getActiveSheet()->SetCellValue('C' . $row, $biller->name);
+                        $this->excel->getActiveSheet()->SetCellValue('D' . $row, $warehouse->name);
+                        $this->excel->getActiveSheet()->SetCellValue('E' . $row, $salesman->last_name." ".$salesman->first_name);
+                        $this->excel->getActiveSheet()->SetCellValue('F' . $row, $this->bpas->formatDecimal($fuel_customer->grand_total));
+                        $this->excel->getActiveSheet()->SetCellValue('G' . $row, lang($fuel_customer->status));
+                        $row++;
+                    }
+                    $this->excel->getActiveSheet()->getColumnDimension('A')->setWidth(15);
+                    $this->excel->getActiveSheet()->getColumnDimension('B')->setWidth(15);
+                    $this->excel->getActiveSheet()->getColumnDimension('C')->setWidth(15);
+                    $this->excel->getActiveSheet()->getColumnDimension('D')->setWidth(15);
+                    $this->excel->getActiveSheet()->getColumnDimension('E')->setWidth(15);
+                    $this->excel->getActiveSheet()->getColumnDimension('F')->setWidth(15);
+                    $this->excel->getActiveSheet()->getColumnDimension('G')->setWidth(15);
+                    $this->excel->getDefaultStyle()->getAlignment()->setVertical(PHPExcel_Style_Alignment::VERTICAL_CENTER);
+                    $filename = 'fuel_customers_' . date('Y_m_d_H_i_s');
+                    $this->load->helper('excel');
+                    create_excel($this->excel, $filename);
+                }
+            } else {
+                $this->session->set_flashdata('error', lang("no_fuel_sale_selected"));
+                redirect($_SERVER["HTTP_REFERER"]);
+            }
+        } else {
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+    }
+    public function fuel_sales($warehouse_id = null,$biller_id = NULL)
+    {
+        $this->bpas->checkPermissions("fuel_sale-index");
+        if($warehouse_id == 0){
+            $warehouse_id = null;
+        }
+        if($biller_id == 0){
+            $biller_id = null;
+        }
+        $this->data['error'] = (validation_errors()) ? validation_errors() : $this->session->flashdata('error');
+        $this->data['warehouses'] = $this->site->getWarehouses();
+        $this->data['warehouse'] = $warehouse_id ? $this->site->getWarehouseByID($warehouse_id) : null;
+        $this->data['billers'] = $this->site->getBillers();
+        $this->data['biller'] = $biller_id ? $this->site->getCompanyByID($biller_id) : null;
+        $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+        $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => site_url('sales'), 'page' => lang('sale')), array('link' => '#', 'page' => lang('fuel_sales')));
+        $meta = array('page_title' => lang('fuel_sales'), 'bc' => $bc);
+        $this->page_construct('sales/fuel_sales', $meta, $this->data);
+    }
+    
+    public function add_fuel_sale()
+    {
+        $this->bpas->checkPermissions('fuel_sale-add', true);
+        $this->form_validation->set_rules('saleman_id', lang("saleman"), 'required');
+        $this->form_validation->set_rules('time_id', lang("time"), 'required');
+        if ($this->form_validation->run() == true) {
+            $biller_id = $this->input->post("biller");
+            $biller_details = $this->site->getCompanyByID($biller_id);
+            $biller = ($biller_details->name?$biller_details->name:$biller_details->company);
+            $warehouse_id = $this->input->post("warehouse");
+            $note = $this->input->post('note');
+            $saleman_id = $this->input->post("saleman_id");
+            $project_id = $this->input->post("project");
+            $time_id = $this->input->post('time_id');
+            $saleman_details = $this->site->getUser($saleman_id);
+            $saleman = $saleman_details->last_name.' '.$saleman_details->first_name;
+            $kh_rate = $this->input->post("kh_rate");
+            $reference_no = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('fuel',$biller_id);
+            if ($this->Owner || $this->Admin || $this->GP['sales-fuel_sale-date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = ($this->Settings->date_with_time==0 ? date('Y-m-d') : date('Y-m-d H:i:s'));
+            }
+            $total = 0;
+            $stockmoves =[];
+            $accTrans =[];
+            $tanks = isset($_POST['tank_id']) ? sizeof($_POST['tank_id']) : 0;
+            for ($r = 0; $r < $tanks; $r++) {
+                $tank_id = $_POST['tank_id'][$r];
+                $nozzle_id = $_POST['nozzle_id'][$r];
+                $nozzle_no = $_POST['nozzle_no'][$r];
+                $product_id = $_POST['product_id'][$r];
+                $start_no = $_POST['start_no'][$r];
+                $end_no = $_POST['end_no'][$r];
+                $unit_price = $_POST['unit_price'][$r];
+                $using_qty = $_POST['using_qty'][$r];
+                $quantity = $_POST['quantity'][$r];
+                $subtotal = $_POST['subtotal'][$r];
+                $customer_qty = $_POST['customer_qty'][$r];
+                $customer_amount = $_POST['customer_amount'][$r];
+                if(($quantity > 0 || $using_qty > 0 || $customer_qty > 0) && $nozzle_id > 0){
+                    $items[] = array(
+                        'tank_id' => $tank_id,
+                        'nozzle_id' => $nozzle_id,
+                        'nozzle_no' => $nozzle_no,
+                        'product_id' => $product_id,
+                        'nozzle_start_no' => $start_no,
+                        'nozzle_end_no' => $end_no,
+                        'unit_price' => $unit_price,
+                        'quantity' => $quantity,
+                        'using_qty' => $using_qty,
+                        'customer_qty' => $customer_qty,
+                        'customer_amount' => $customer_amount,
+                        'subtotal' => $subtotal
+                    );
+                    $total += $subtotal;
+                }
+                
+                if($using_qty > 0){
+                    $product_details = $this->site->getProductByID($product_id);
+                    $stockmoves[] = array(
+                        'transaction' => 'FuelSale',
+                        'product_id' => $product_details->id,
+                        'product_code' => $product_details->code,
+                        'quantity' => (-1)*$using_qty,
+                        'unit_quantity' => 1,
+                        'unit_id' => $product_details->unit,
+                        'warehouse_id' => $warehouse_id,
+                        'date' => $date,
+                        'real_unit_cost' => $product_details->cost,
+                        'reference_no' => $reference_no,
+                        'user_id' => $this->session->userdata('user_id'),
+                    );
+                    if($this->Settings->module_account == 1){       
+                        $productAcc = $this->site->getProductAccByProductId($product_details->id);
+                        $accTrans[] = array(
+                            'tran_type' => 'FuelSale',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $productAcc->stock_acc,
+                            'amount' => -($product_details->cost * $using_qty),
+                            'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$using_qty.'#'.'Cost: '.$product_details->cost,
+                            'description' => $note,
+                            'biller_id' => $biller_id,
+                            'project_id' => $project_id,
+                            'created_by' => $this->session->userdata('user_id'),
+                        );
+                        $accTrans[] = array(
+                            'tran_type' => 'FuelSale',
+                            'tran_date' => $date,
+                            'reference_no' => $reference_no,
+                            'account_code' => $productAcc->usage_acc,
+                            'amount' => ($product_details->cost * $using_qty),
+                            'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$using_qty.'#'.'Cost: '.$product_details->cost,
+                            'description' => $note,
+                            'biller_id' => $biller_id,
+                            'project_id' => $project_id,
+                            'created_by' => $this->session->userdata('user_id'),
+                        );
+                    }
+                }
+            }
+            $data = array(
+                'date' => $date,
+                'reference_no'=> $reference_no,
+                'biller_id'=> $biller_id,
+                'biller'=> $biller,
+                'saleman_id'=> $saleman_id,
+                'saleman'=> $saleman,
+                'warehouse_id'=> $warehouse_id,
+                'project_id'=> $project_id,
+                'total'=> $total,
+                'note' => $note,
+                'kh_rate' => $kh_rate,
+                'created_by'=> $this->session->userdata('user_id'),
+                'time_id' => $time_id
+            );
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+            
+            if (empty($items)) {
+                $this->form_validation->set_rules('tank_order', lang("tank_order"), 'required');
+            }
+            
+            $default_currency = $this->site->getCurrencyByCode($this->Settings->default_currency);
+            $currency = $this->site->getCurrencyByCode("USD");
+            $currency_khr = $this->site->getCurrencyByCode("KHR");
+            
+            $credit_amount = 0;
+            if(isset($_POST['credit_amount_usd']) || isset($_POST['credit_amount_khr'])){
+                $credit_amount_usd = $this->input->post('credit_amount_usd',true);
+                $credit_amount += (($credit_amount_usd * $default_currency->rate) / $currency->rate);
+                $json_credit_amount[$currency->code] = array(
+                    "code"=>$currency->code,
+                    "rate"=> $currency->rate, 
+                    "amount"=>$credit_amount_usd
+                );
+                
+                $credit_amount_khr = $this->input->post('credit_amount_khr', true);
+                $credit_amount += (($credit_amount_khr * $default_currency->rate) / $kh_rate);
+                $json_credit_amount[$currency_khr->code] = array(
+                    "code"=>$currency_khr->code,
+                    "rate"=> $kh_rate, 
+                    "amount"=>$credit_amount_khr
+                );
+                
+                
+                $data["credit_amount"] = $credit_amount;
+                $data["json_credit_amount"] = json_encode($json_credit_amount);
+            }
+            
+            $bank_amount = 0;
+            if(isset($_POST['bank_amount_usd']) || isset($_POST['bank_amount_khr'])){
+                $bank_amount_usd = $this->input->post('bank_amount_usd',true);
+                $bank_amount += (($bank_amount_usd * $default_currency->rate) / $currency->rate);
+                $json_bank_amount[$currency->code] = array(
+                    "code"=>$currency->code,
+                    "rate"=> $currency->rate, 
+                    "amount"=>$bank_amount_usd
+                );
+                
+                $bank_amount_khr = $this->input->post('bank_amount_khr', true);
+                $bank_amount += (($bank_amount_khr * $default_currency->rate) / $kh_rate);
+                $json_bank_amount[$currency_khr->code] = array(
+                    "code"=>$currency_khr->code,
+                    "rate"=> $kh_rate, 
+                    "amount"=>$bank_amount_khr
+                );
+                
+                
+                $data["bank_amount"] = $bank_amount;
+                $data["json_bank_amount"] = json_encode($json_bank_amount);
+            }
+            
+            if(isset($_POST['count-money-kh']) || isset($_POST['count-money-usd'])){
+                $change_kh = $this->input->post('change_kh',true);
+                $change_usd = $this->input->post('change_usd', true);
+                $total_kh = $this->input->post('total_KHR',true);
+                $total_usd = $this->input->post('total_USD', true);
+                $total_cash_open = 0;
+                $total_cash=0;
+                                
+                if(isset($_POST['count-money-usd'])){
+                    /*foreach($_POST['count-money-usd'] as $money => $number){
+                        $total_usd += ($money * $number);
+                    }*/
+                    $total_cash += (($total_usd * $default_currency->rate) / $currency->rate);
+                    $json_total_cash_count[$currency->code] = json_encode($_POST['count-money-usd']);
+                    $total_cash_open += (($change_usd* $default_currency->rate) / $currency->rate);
+                    $json_total_cash[$currency->code] = array(
+                        "code"=>$currency->code,
+                        "rate"=> $currency->rate, 
+                        "amount"=>$total_usd
+                    );
+                    $json_total_cash_open[$currency->code] = array(
+                        "code"=>$currency->code,
+                        "rate"=> $currency->rate, 
+                        "amount"=>$change_usd
+                    );
+                }
+                
+                if(isset($_POST['count-money-kh'])){
+                    
+                    /*foreach($_POST['count-money-kh'] as $money => $number){
+                        $total_kh += ($money * $number);
+                    }*/
+                    $total_cash += (($total_kh * $default_currency->rate) / $kh_rate);
+                    $total_cash_open += (($change_kh* $default_currency->rate) / $kh_rate);
+                    $json_total_cash_count[$currency_khr->code] = json_encode($_POST['count-money-kh']);
+                    $json_total_cash[$currency_khr->code] = array(
+                        "code" => $currency_khr->code,
+                        "rate" => $kh_rate, 
+                        "amount" => $total_kh
+                    );
+                    $json_total_cash_open[$currency_khr->code] = array(
+                        "code" => $currency_khr->code,
+                        "rate" => $kh_rate, 
+                        "amount" => $change_kh
+                    );
+                }
+
+                $data["total_cash"] = $total_cash;
+                $data["total_cash_open"] = $total_cash_open;
+                $data["json_total_cash_count"] = json_encode($json_total_cash_count);
+                $data["json_total_cash"] = json_encode($json_total_cash);
+                $data["json_total_cash_open"] = json_encode($json_total_cash_open);
+            }
+            
+        }else if($this->input->post('add_fuel_sale')){
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->addFuelSale($data, $items, $stockmoves, $accTrans)) {
+            $this->session->set_userdata('remove_shls', 1);
+            $this->session->set_flashdata('message', lang("fuel_sale_added"));
+            admin_redirect('sales/fuel_sales');
+        }else{
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $saleman = $this->input->get("saleman_id", true);
+            $saleman_details = $this->site->getUser($saleman);
+            $fuel_items = $this->sales_model->getFuelItemsBySaleman($saleman);
+            if($fuel_items){
+                $c = rand(100000, 9999999);
+                foreach ($fuel_items as $fuel_item) {
+                    $product = $this->site->getProductByID($fuel_item->product_id);
+                    $row = json_decode('{}');
+                    $nozzles = $this->sales_model->getTankNozzlesByTankID($fuel_item->tank_id);
+                    if($nozzles){
+                        foreach($nozzles as $nozzle){
+                            $fuel_sale = $this->sales_model->getFuelSaleQuantityItem($fuel_item->tank_id, $nozzle->id);
+                            if($fuel_sale->quantity > 0){
+                                $quantity = $fuel_sale->quantity;
+                            }else{
+                                $quantity = $nozzle->nozzle_start_no;
+                            }
+                            $nozzle->nozzle_start_no = $quantity;
+                            $nozzle->customer_qty = 0;
+                            $nozzle->customer_amount = 0;
+                            $fuel_customer = $this->sales_model->getFuelCustomerNozzleQuantity($saleman,$nozzle->id);
+                            if($fuel_customer){
+                                $nozzle->customer_qty = $fuel_customer->quantity;
+                                $nozzle->customer_amount = $fuel_customer->amount;
+                            }
+                        }
+                    }
+                    $fuel_old = $this->sales_model->getFuelSaleQuantityItem($fuel_item->tank_id, $fuel_item->id);
+                    $fuel_cus = $this->sales_model->getFuelCustomerNozzleQuantity($saleman,$fuel_item->id);
+                    if($fuel_old->quantity <= 0){
+                        $fuel_old->quantity = $fuel_item->nozzle_start_no;
+                    }
+                    $row->id = $fuel_item->tank_id;
+                    $row->code = $fuel_item->code;
+                    $row->name = $fuel_item->name;
+                    $row->nozzle_id = $fuel_item->id;
+                    $row->product_id = $fuel_item->product_id;
+                    $row->nozzle_no = $fuel_item->nozzle_no;
+                    $row->start_no = $fuel_old->quantity;
+                    $row->customer_qty = ($fuel_cus ? $fuel_cus->quantity : 0);
+                    $row->customer_amount = ($fuel_cus ? $fuel_cus->amount : 0);
+                    $row->end_no = 0;
+                    $row->quantity = 0;
+                    $row->unit_price = (double)$product->price;
+                    $row->subtotal = 0;
+                    $ri = $c;
+                    $pr[$ri] = array('id' => ($c), 'item_id' => $row->id, 'label' => $row->name . " (" . $row->code . ")", 'row' => $row, 'nozzles' => $nozzles);
+                    $c++;
+                }
+                $this->data['fuel_items'] = json_encode($pr);
+            }else{
+                $this->data['fuel_items'] = false;
+            }
+            $this->data['billers'] = $this->site->getAllCompanies('biller');
+            $this->data['projects'] = $this->site->getAllProjects();
+            $this->data['warehouses'] = $this->site->getWarehouses();
+            $this->data['salemans'] = $this->site->getSalemans();
+            $this->data['times'] = $this->sales_model->getFuelTimes();
+            $this->data['tanks'] = $this->site->getTanks();
+            $this->data['kh_rate'] = $this->site->getCurrencyByCode("KHR")->rate;
+            $this->data['money_changes'] = $saleman_details && $saleman_details->money_change?json_decode($saleman_details->money_change):null;
+            $this->data['fuel_time'] = $saleman_details && $saleman_details->fuel_time_id?$saleman_details->fuel_time_id:0;
+            $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => site_url('sales'), 'page' => lang('sales')), array('link' => site_url('sales/fuel_sales'), 'page' => lang('fuels')), array('link' => '#', 'page' => lang('add_fuel_sale')));
+            $meta = array('page_title' => lang('add_fuel_sale'), 'bc' => $bc);
+            $this->page_construct('sales/add_fuel_sale', $meta, $this->data);
+        }
+    }
+    
+    public function edit_fuel_sale($id = NULL)
+    {
+        $this->bpas->checkPermissions('fuel_sale-edit', true);
+        $this->form_validation->set_rules('warehouse', lang("warehouse"), 'required');
+        $this->form_validation->set_rules('time_id', lang("time"), 'required');
+        if ($this->form_validation->run() == true) {
+            $biller_id = $this->input->post("biller");
+            $biller_details = $this->site->getCompanyByID($biller_id);
+            $biller = ($biller_details->name?$biller_details->name:$biller_details->company);
+            $warehouse_id = $this->input->post("warehouse");
+            $saleman_id = $this->input->post("saleman_id");
+            $project_id = $this->input->post("project");
+            $time_id = $this->input->post('time_id');
+            $note = $this->input->post('note');
+            $kh_rate = $this->input->post("kh_rate");
+            $reference_no = $this->input->post('reference_no') ? $this->input->post('reference_no') : $this->site->getReference('fuel',$biller_id);
+            if ($this->Owner || $this->Admin || $GP['sales-fuel_sale-date']) {
+                $date = $this->bpas->fld(trim($this->input->post('date')));
+            } else {
+                $date = ($this->Settings->date_with_time==0 ? date('Y-m-d') : date('Y-m-d H:i:s'));
+            }
+            $total = 0;
+            $tanks = isset($_POST['tank_id']) ? sizeof($_POST['tank_id']) : 0;
+            for ($r = 0; $r < $tanks; $r++) {
+                $tank_id = $_POST['tank_id'][$r];
+                $nozzle_id = $_POST['nozzle_id'][$r];
+                $nozzle_no = $_POST['nozzle_no'][$r];
+                $product_id = $_POST['product_id'][$r];
+                $start_no = $_POST['start_no'][$r];
+                $end_no = $_POST['end_no'][$r];
+                $unit_price = $_POST['unit_price'][$r];
+                $quantity = $_POST['quantity'][$r];
+                $using_qty = $_POST['using_qty'][$r];
+                $subtotal = $_POST['subtotal'][$r];
+                $customer_qty = $_POST['customer_qty'][$r];
+                $customer_amount = $_POST['customer_amount'][$r];
+                if(($quantity > 0 || $using_qty > 0 || $customer_qty > 0) && $nozzle_id > 0){
+                    $items[] = array(
+                        'tank_id' => $tank_id,
+                        'nozzle_id' => $nozzle_id,
+                        'nozzle_no' => $nozzle_no,
+                        'product_id' => $product_id,
+                        'nozzle_start_no' => $start_no,
+                        'nozzle_end_no' => $end_no,
+                        'unit_price' => $unit_price,
+                        'quantity' => $quantity,
+                        'using_qty' => $using_qty,
+                        'customer_qty' => $customer_qty,
+                        'customer_amount' => $customer_amount,
+                        'subtotal' => $subtotal
+                    );
+                    $total += $subtotal;
+                }
+                if($using_qty > 0){
+                    $product_details = $this->site->getProductByID($product_id);
+                    $stockmoves[] = array(
+                        'transaction' => 'FuelSale',
+                        'transaction_id' => $id,
+                        'product_id' => $product_details->id,
+                        'product_code' => $product_details->code,
+                        'quantity' => (-1)*$using_qty,
+                        'unit_quantity' => 1,
+                        'unit_id' => $product_details->unit,
+                        'warehouse_id' => $warehouse_id,
+                        'date' => $date,
+                        'real_unit_cost' => $product_details->cost,
+                        'reference_no' => $reference_no,
+                        'user_id' => $this->session->userdata('user_id'),
+                    );
+                    if($this->Settings->accounting == 1){       
+                        $productAcc = $this->site->getProductAccByProductId($product_details->id);
+                        $accTrans[] = array(
+                            'transaction' => 'FuelSale',
+                            'transaction_id' => $id,
+                            'transaction_date' => $date,
+                            'reference' => $reference_no,
+                            'account' => $productAcc->stock_acc,
+                            'amount' => -($product_details->cost * $using_qty),
+                            'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$using_qty.'#'.'Cost: '.$product_details->cost,
+                            'description' => $note,
+                            'biller_id' => $biller_id,
+                            'project_id' => $project_id,
+                            'user_id' => $this->session->userdata('user_id'),
+                        );
+                        $accTrans[] = array(
+                            'transaction' => 'FuelSale',
+                            'transaction_id' => $id,
+                            'transaction_date' => $date,
+                            'reference' => $reference_no,
+                            'account' => $productAcc->usage_acc,
+                            'amount' => ($product_details->cost * $using_qty),
+                            'narrative' => 'Product Code: '.$item_code.'#'.'Qty: '.$using_qty.'#'.'Cost: '.$product_details->cost,
+                            'description' => $note,
+                            'biller_id' => $biller_id,
+                            'project_id' => $project_id,
+                            'user_id' => $this->session->userdata('user_id'),
+                        );
+                    }
+                }
+            }
+            $data = array(
+                        'date' => $date,
+                        'reference_no'=> $reference_no,
+                        'biller_id'=> $biller_id,
+                        'biller'=> $biller,
+                        'warehouse_id'=> $warehouse_id,
+                        'project_id'=> $project_id,
+                        'total'=> $total,
+                        'kh_rate' => $kh_rate,
+                        'updated_by'=> $this->session->userdata('user_id'),
+                        'updated_at'=> date("Y-m-d H:i"),
+                        'note' => $note,
+                        'time_id' => $time_id
+                    );
+            if ($_FILES['userfile']['size'] > 0) {
+                $this->load->library('upload');
+                $config['upload_path'] = $this->digital_upload_path;
+                $config['allowed_types'] = $this->digital_file_types;
+                $config['max_size'] = $this->allowed_file_size;
+                $config['overwrite'] = false;
+                $config['encrypt_name'] = true;
+                $this->upload->initialize($config);
+                if (!$this->upload->do_upload()) {
+                    $error = $this->upload->display_errors();
+                    $this->session->set_flashdata('error', $error);
+                    redirect($_SERVER["HTTP_REFERER"]);
+                }
+                $photo = $this->upload->file_name;
+                $data['attachment'] = $photo;
+            }
+            if (empty($items)) {
+                $this->form_validation->set_rules('tank_order', lang("tank_order"), 'required');
+            }
+            $currency = $this->site->getCurrencyByCode("USD");
+            $currency_khr = $this->site->getCurrencyByCode("KHR");
+            $default_currency = $this->site->getCurrencyByCode($this->Settings->default_currency);
+            
+            $credit_amount = 0;
+            if(isset($_POST['credit_amount_usd']) || isset($_POST['credit_amount_khr'])){
+                $credit_amount_usd = $this->input->post('credit_amount_usd',true);
+                $credit_amount += (($credit_amount_usd * $default_currency->rate) / $currency->rate);
+                $json_credit_amount[$currency->code] = array(
+                    "code"=>$currency->code,
+                    "rate"=> $currency->rate, 
+                    "amount"=>$credit_amount_usd
+                );
+                
+                $credit_amount_khr = $this->input->post('credit_amount_khr', true);
+                $credit_amount += (($credit_amount_khr * $default_currency->rate) / $kh_rate);
+                $json_credit_amount[$currency_khr->code] = array(
+                    "code"=>$currency_khr->code,
+                    "rate"=> $kh_rate, 
+                    "amount"=>$credit_amount_khr
+                );
+                $data["credit_amount"] = $credit_amount;
+                $data["json_credit_amount"] = json_encode($json_credit_amount);
+            }
+            
+            $bank_amount = 0;
+            if(isset($_POST['bank_amount_usd']) || isset($_POST['bank_amount_khr'])){
+                $bank_amount_usd = $this->input->post('bank_amount_usd',true);
+                $bank_amount += (($bank_amount_usd * $default_currency->rate) / $currency->rate);
+                $json_bank_amount[$currency->code] = array(
+                    "code"=>$currency->code,
+                    "rate"=> $currency->rate, 
+                    "amount"=>$bank_amount_usd
+                );
+                
+                $bank_amount_khr = $this->input->post('bank_amount_khr', true);
+                $bank_amount += (($bank_amount_khr * $default_currency->rate) / $kh_rate);
+                $json_bank_amount[$currency_khr->code] = array(
+                    "code"=>$currency_khr->code,
+                    "rate"=> $kh_rate, 
+                    "amount"=>$bank_amount_khr
+                );
+                
+                
+                $data["bank_amount"] = $bank_amount;
+                $data["json_bank_amount"] = json_encode($json_bank_amount);
+            }
+            
+            if(isset($_POST['count-money-kh']) || isset($_POST['count-money-usd'])){
+                $change_kh = $this->input->post('change_kh',true);
+                $change_usd = $this->input->post('change_usd', true);
+                $total_kh = $this->input->post('total_KHR',true);
+                $total_usd = $this->input->post('total_USD', true);
+                $total_cash_open = 0;
+                
+                if(isset($_POST['count-money-usd'])){
+                    
+                    /*foreach($_POST['count-money-usd'] as $money => $number){
+                        $total_usd += ($money * $number);
+                    }*/
+                    $total_cash += (($total_usd * $default_currency->rate) / $currency->rate);
+                    $total_cash_open += (($change_usd* $default_currency->rate) / $currency->rate);
+                    $json_total_cash_count[$currency->code] = json_encode($_POST['count-money-usd']);
+                    $json_total_cash[$currency->code] = array(
+                        "code"=>$currency->code,
+                        "rate"=> $currency->rate, 
+                        "amount"=>$total_usd
+                    );
+                    $json_total_cash_open[$currency->code] = array(
+                        "code"=>$currency->code,
+                        "rate"=> $currency->rate, 
+                        "amount"=>$change_usd
+                    );
+                }
+
+                if(isset($_POST['count-money-kh'])){
+                    
+                    /*foreach($_POST['count-money-kh'] as $money => $number){
+                        $total_kh += ($money * $number);
+                    }*/
+                    $total_cash += (($total_kh * $default_currency->rate) / $kh_rate);
+                    $total_cash_open += (($change_kh* $default_currency->rate) / $kh_rate);
+                    $json_total_cash_count[$currency_khr->code] = json_encode($_POST['count-money-kh']);
+                    $json_total_cash[$currency_khr->code] = array(
+                        "code" => $currency_khr->code,
+                        "rate" => $kh_rate, 
+                        "amount" => $total_kh
+                    );
+                    $json_total_cash_open[$currency_khr->code] = array(
+                        "code" => $currency_khr->code,
+                        "rate" => $kh_rate, 
+                        "amount" => $change_kh
+                    );
+                }
+                $data["total_cash"] = $total_cash;
+                $data["total_cash_open"] = $total_cash_open;
+                $data["json_total_cash_count"] = json_encode($json_total_cash_count);
+                $data["json_total_cash"] = json_encode($json_total_cash);
+                $data["json_total_cash_open"] = json_encode($json_total_cash_open);
+            }
+            
+        }else if($this->input->post('edit_fuel_sale')){
+            $this->session->set_flashdata('error', validation_errors());
+            redirect($_SERVER['HTTP_REFERER']);
+        }
+        if ($this->form_validation->run() == true && $this->sales_model->updateFuelSale($id, $data, $items, $stockmoves, $accTrans)) {
+            $this->session->set_userdata('remove_shls', 1);
+            $this->session->set_flashdata('message', lang("fuel_sale_updated"));
+            admin_redirect('sales/fuel_sales');
+        }else{
+            $this->data['error'] = (validation_errors() ? validation_errors() : $this->session->flashdata('error'));
+            $fuel_sale = $this->sales_model->getFuelSaleByID($id);
+            $fuel_sale_items = $this->sales_model->getFuelSaleItemsByFuelSaleID($id);
+            $c = rand(100000, 9999999);
+            foreach ($fuel_sale_items as $fuel_sale_item) {
+                $row = json_decode('{}');
+                $ri = $c;
+                $nozzles = $this->sales_model->getTankNozzlesByTankID($fuel_sale_item->tank_id);
+                if($nozzles){
+                    foreach($nozzles as $nozzle){
+                        $shift = $this->sales_model->getFuelSaleQuantityItem($fuel_sale_item->tank_id, $nozzle->id);
+                        $quantity = ($shift->quantity + $nozzle->nozzle_start_no);
+                        $nozzle->nozzle_start_no = ($quantity - $fuel_sale_item->quantity);
+                    }
+                }
+                $row->id = $fuel_sale_item->tank_id;
+                $row->code = $fuel_sale_item->tank_code;
+                $row->name = $fuel_sale_item->tank_name;
+                $row->nozzle_id = $fuel_sale_item->nozzle_id;
+                $row->product_id = $fuel_sale_item->product_id;
+                $row->nozzle_no = $fuel_sale_item->nozzle_no;
+                $row->start_no = $fuel_sale_item->nozzle_start_no;
+                $row->end_no = $fuel_sale_item->nozzle_end_no;
+                $row->quantity = $fuel_sale_item->quantity;
+                $row->using_qty = $fuel_sale_item->using_qty;
+                $row->customer_qty = $fuel_sale_item->customer_qty;
+                $row->customer_amount = $fuel_sale_item->customer_amount;
+                $row->unit_price = $fuel_sale_item->unit_price;
+                $row->subtotal = $fuel_sale_item->subtotal;
+                $pr[$ri] = array('id' => ($c), 'item_id' => $row->id, 'label' => $row->name . " (" . $row->code . ")", 'row' => $row, 'nozzles' => $nozzles);
+                $c++;
+            }
+            $this->data['id'] = $id;
+            $this->data['fuel_sale'] = $fuel_sale;
+            $this->data['fuel_sale_items'] = json_encode($pr);
+            $this->data['billers'] = $this->site->getAllCompanies('biller');
+            $this->data['projects'] = $this->site->getAllProjects();
+            $this->data['warehouses'] = $this->site->getWarehouses();
+            $this->data['times'] = $this->sales_model->getFuelTimes();
+            $this->data['salemans'] = $this->site->getSalemans();
+            $this->data['tanks'] = $this->site->getTanks();
+            $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => site_url('sales'), 'page' => lang('sales')), array('link' => site_url('sales/fuel_sales'), 'page' => lang('fuels')), array('link' => '#', 'page' => lang('edit_fuel_sale')));
+            $meta = array('page_title' => lang('edit_fuel_sale'), 'bc' => $bc);
+            $this->page_construct('sales/edit_fuel_sale', $meta, $this->data);
+        }
+    }
+    public function getFuelSales($warehouse_id = null, $biller_id = null)
+    {
+        $this->bpas->checkPermissions("fuel_sale-index");
+        $this->load->library('datatables');
+        $add_sale_link = '';
+        if(($this->Admin || $this->Owner) || $this->GP['sales-add']){
+            $add_sale_link = anchor('admin/sales/add?fuel_sale_id=$1', '<i class="fa fa-plus-circle"></i> ' . lang('add_sale'), ' class="fuel-add_sale" ');
+        }
+        $submit_cash_link = '';
+        if(($this->Admin || $this->Owner) || $this->GP['sales-fuel_sale-add']){
+            $submit_cash_link = anchor('admin/sales/submit_cash/$1', '<i class="fa fa-usd"></i> ' . lang('submit_cash'), ' data-backdrop="static" data-keyboard="false" data-toggle="modal" data-backdrop="static" data-keyboard="false" data-toggle="modal" data-target="#myModal"');
+        }
+        $detail_link = anchor('admin/sales/view_fuel_sale/$1', '<i class="fa fa-file-text-o"></i> ' . lang('view_fuel_sale'), ' data-toggle="modal" data-target="#myModal"');
+        $edit_link = '';
+        if(($this->Admin || $this->Owner) || $this->GP['sales-fuel_sale-edit']){
+            $edit_link = anchor('admin/sales/edit_fuel_sale/$1', '<i class="fa fa-edit"></i> ' . lang('edit_fuel_sale'), ' class="fuel-edit" ');
+        }
+        $delete_link = '';
+        if(($this->Admin || $this->Owner) || $this->GP['sales-fuel_sale-delete']){
+            $delete_link = "<a href='#' class='po fuel-delete' title='<b>" . lang("delete_fuel_sale") . "</b>' data-content=\"<p>"
+            . lang('r_u_sure') . "</p><a class='btn btn-danger po-delete' href='" . admin_url('sales/delete_fuel_sale/$1') . "'>"
+            . lang('i_m_sure') . "</a> <button class='btn po-close'>" . lang('no') . "</button>\"  rel='popover'><i class=\"fa fa-trash-o\"></i> "
+            . lang('delete_fuel_sale') . "</a>";
+        }
+        $action = '<div class="text-center"><div class="btn-group text-left">'
+                    . '<button type="button" class="btn btn-default btn-xs btn-primary dropdown-toggle" data-toggle="dropdown">'
+                    . lang('actions') . ' <span class="caret"></span></button>
+                        <ul class="dropdown-menu pull-right" role="menu">
+                            <li>' . $detail_link. '</li>
+                            <li>' . $add_sale_link . '</li>
+                            <li>' . $edit_link . '</li>
+                            <li>' . $delete_link . '</li>
+                        </ul>
+                    </div></div>';
+        
+        $this->datatables->select("
+                    fuel_sales.id as id,
+                    DATE_FORMAT(".$this->db->dbprefix("fuel_sales").".date, '%Y-%m-%d %T') as date,
+                    fuel_sales.reference_no,
+                    fuel_sales.saleman,
+                    CONCAT(".$this->db->dbprefix("fuel_times").".open_time,' - ',".$this->db->dbprefix("fuel_times").".close_time) as time,
+                    IFNULL(bpas_fuel_sale_items.customer_qty,0) as customer_qty,
+                    IFNULL(bpas_fuel_sale_items.using_qty,0) as using_qty,
+                    IFNULL(bpas_fuel_sale_items.quantity,0) as quantity,
+                    IFNULL(".$this->db->dbprefix("fuel_sales").".total,0) as total_sales,
+                    IFNULL(".$this->db->dbprefix("fuel_sales").".total_cash_open,0) as cash_change,
+                    IFNULL(".$this->db->dbprefix("fuel_sales").".total_cash,0) as cash_submit,
+                    IFNULL(".$this->db->dbprefix("fuel_sales").".credit_amount,0) as credit_amount,
+                    IFNULL(".$this->db->dbprefix("fuel_sales").".bank_amount,0) as bank_amount,
+                    (IFNULL(".$this->db->dbprefix("fuel_sales").".bank_amount,0) + IFNULL(".$this->db->dbprefix("fuel_sales").".credit_amount,0) + IFNULL(".$this->db->dbprefix("fuel_sales").".total_cash,0) - IFNULL(".$this->db->dbprefix("fuel_sales").".total_cash_open,0)) - IFNULL(".$this->db->dbprefix("fuel_sales").".total,0) as different,
+                    IF(IFNULL(".$this->db->dbprefix("fuel_sales").".total,0) = 0, 'completed', IF(ROUND(bpas_sales.quantity,".$this->Settings->decimals.")>=ROUND(".$this->db->dbprefix("fuel_sale_items").".quantity,".$this->Settings->decimals."),'completed',IF(bpas_sales.quantity > 0,'partial','pending'))) as status,
+                    fuel_sales.attachment
+                    ", false)
+            ->from("fuel_sales")
+            ->join('fuel_times', 'fuel_times.id=fuel_sales.time_id', 'left')
+            ->join('(SELECT 
+                            fuel_sale_id,
+                            SUM(subtotal) as subtotal,
+                            SUM(quantity) as quantity
+                        FROM '.$this->db->dbprefix("sales").'
+                        LEFT JOIN '.$this->db->dbprefix("sale_items").' ON '.$this->db->dbprefix("sale_items").'.sale_id = '.$this->db->dbprefix("sales").'.id
+                        GROUP BY fuel_sale_id) as bpas_sales','bpas_sales.fuel_sale_id=fuel_sales.id','left')
+            ->join('(SELECT 
+                            fuel_sale_id,
+                            SUM(quantity) as quantity,
+                            SUM(customer_qty) as customer_qty,
+                            SUM(using_qty) as using_qty
+                        FROM '.$this->db->dbprefix("fuel_sale_items").' 
+                        GROUP BY fuel_sale_id) as bpas_fuel_sale_items','bpas_fuel_sale_items.fuel_sale_id=fuel_sales.id','left')
+            ->join('users', 'users.id=fuel_sales.created_by', 'left')
+            ->add_column("Actions", $action, "id");
+        
+        if ($biller_id) {
+             $this->datatables->where('fuel_sales.biller_id', $biller_id);
+        }
+        if ($warehouse_id) {
+            $this->datatables->where('fuel_sales.warehouse_id', $warehouse_id);
+        }
+        if (!$this->Owner && !$this->Admin && $this->session->userdata('biller_id')) {
+            $this->datatables->where('fuel_sales.biller_id', $this->session->userdata('biller_id'));
+        }
+        if (!$this->Owner && !$this->Admin && $this->session->userdata('warehouse_id')) {
+            $this->db->where_in('fuel_sales.warehouse_id', json_decode($this->session->userdata('warehouse_id')));
+        }
+        if (!$this->Owner && !$this->Admin && !$this->session->userdata('view_right')) {
+            $this->datatables->where('fuel_sales.created_by', $this->session->userdata('user_id'));
+        }
+        echo $this->datatables->generate();
+    }
+    
+    public function delete_fuel_sale($id = null)
+    {
+        $this->bpas->checkPermissions("fuel_sale-delete");
+        if ($this->input->get('id')) {
+            $id = $this->input->get('id');
+        }
+        $sale = $this->sales_model->getSaleByFuelID($id);
+        if($sale){
+            $this->bpas->send_json(['error' => 0, 'msg' => lang('fuel_sale_cannot_delete')]);
+        }
+        if ($this->sales_model->deleteFuelSale($id)) {
+            if ($this->input->is_ajax_request()) {
+                $this->bpas->send_json(['error' => 0, 'msg' => lang('fuel_sale_deleted')]);
+            }
+            $this->session->set_flashdata('message', lang("fuel_sale_deleted"));
+            redirect($_SERVER["HTTP_REFERER"]);
+        }
+    }
+    public function suggesion_fuel_sale()
+    {
+        $term = $this->input->get('term', true);
+        $salesman_id = $this->input->get('salesman_id', true);
+        $customer_id = $this->input->get('customer_id', true);
+        $warehouse_id = $this->input->get('warehouse_id', true);
+        $warehouse = $this->site->getWarehouseByID($warehouse_id);
+        $customer_trucks = false;
+        if($customer_id){
+            $customer = $this->site->getCompanyByID($customer_id);
+            $customer_group = $this->site->getCustomerGroupByID($customer->customer_group_id);
+            if($this->config->item('customer_truck')){
+                $customer_trucks = $this->sales_model->getCustomerTrucks($customer_id);
+            }
+        }
+        if (strlen($term) < 1 || !$term) {
+            die("<script type='text/javascript'>setTimeout(function(){ window.top.location.href = '" . admin_url('welcome') . "'; }, 10);</script>");
+        }
+        $analyzed = $this->bpas->analyze_term($term);
+        $sr = $analyzed['term'];
+        $option_id = $analyzed['option_id'];
+        $rows = $this->sales_model->getTankNames($sr,$warehouse_id);
+        if ($rows) {
+            $c = str_replace(".", "", microtime(true));
+            $r = 0;
+            foreach ($rows as $row) {
+                $nozzles = $this->sales_model->getTankNozzlesByTankID($row->id);
+                 if($nozzles){
+                    foreach($nozzles as $nozzle){
+                        $fuel_sale = $this->sales_model->getFuelSaleQuantityItem($row->id, $nozzle->id);
+                        if($fuel_sale->quantity > 0){
+                            $quantity = $fuel_sale->quantity;
+                        }else{
+                            $quantity = $nozzle->nozzle_start_no;
+                        }
+                        $nozzle->nozzle_start_no = $quantity;
+                        $nozzle->customer_qty = 0;
+                        $nozzle->customer_amount = 0;
+                        $fuel_customer = $this->sales_model->getFuelCustomerNozzleQuantity($salesman_id,$nozzle->id);
+                        if($fuel_customer){
+                            $nozzle->customer_qty = $fuel_customer->quantity;
+                            $nozzle->customer_amount = $fuel_customer->amount;
+                        }
+    
+                        if($customer_id){
+                            /*if($this->Settings->customer_price == 1 && $customer_price = $this->sales_model->getCustomerPrice($nozzle->product_id,$customer_id)){
+                                if (isset($customer_price) && $customer_price != false) {
+                                    if($customer_price->price > 0){
+                                        $nozzle->unit_price = $customer_price->price;
+                                    }
+                                }
+                            } else */if ($customer->price_group_id) {
+                                if ($pr_group_price = $this->site->getProductGroupPrice($nozzle->product_id, $customer->price_group_id)) {
+                                    $nozzle->unit_price = $pr_group_price->price;
+                                }
+                            } else if ($warehouse->price_group_id) {
+                                if ($pr_group_price = $this->site->getProductGroupPrice($nozzle->product_id, $warehouse->price_group_id)) {
+                                    $nozzle->unit_price = $pr_group_price->price;
+                                }
+                            }
+                            $nozzle->unit_price = $nozzle->unit_price + (($nozzle->unit_price * $customer_group->percent) / 100);
+                        }
+                    }
+                }
+                
+                $row->start_no = 0;
+                $row->end_no = 0;
+                $row->unit_price = 0;
+                $row->quantity = 0;
+                $pr[] = array('id' => ($c + $r), 'item_id' => $row->id, 'label' => $row->name . " (" . $row->code . ")", 'row' => $row, 'nozzles' => $nozzles, 'customer_trucks' => $customer_trucks);
+                $r++;
+            }
+            $this->bpas->send_json($pr);
+        } else {
+            $this->bpas->send_json(array(array('id' => 0, 'label' => lang('no_match_found'), 'value' => $term)));
+        }
+    }
+    public function view_fuel_sale($id = null)
+    {
+        $this->bpas->checkPermissions("fuel_sale-index");
+        $fuel_sale = $this->sales_model->getFuelSaleByID($id);
+        $this->data['fuel_sale'] = $fuel_sale;
+        $this->data['time'] = $this->sales_model->getFuelTimeByID($fuel_sale->time_id);
+        $this->data['rows'] = $this->sales_model->getFuelSaleItemsByFuelSaleID($id);
+        $this->data['saleman'] = $this->site->getUser($fuel_sale->saleman_id);
+        $this->data['biller'] = $this->site->getCompanyByID($fuel_sale->biller_id);
+        if($this->Owner || $this->Admin || $this->bms->GP['unlimited-print']){
+            $this->data['print'] = 0;
+        }else{
+            if($this->Settings->limit_print=='1' && $this->site->checkPrint('FuelSale',$fuel_sale->id)){
+                $this->data['print'] = 1;
+            }else if($this->Settings->limit_print=='2' && $this->site->checkPrint('FuelSale',$fuel_sale->id)){
+                $this->data['print'] = 2;
+            }else{
+                $this->data['print'] = 0;
+            }
+        }
+        $this->data['created_by'] = $this->site->getUser($fuel_sale->created_by);
+        $this->data['sales'] = $this->sales_model->getSaleByFuelID($id);
+        $this->load->view($this->theme . 'sales/view_fuel_sale', $this->data);
+    }
+}
