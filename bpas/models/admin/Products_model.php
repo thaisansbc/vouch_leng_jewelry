@@ -957,6 +957,36 @@ class Products_model extends CI_Model
         }
         return false;
     }
+    public function getProductNamesUsing($id, $term, $limit = 100)
+    {
+        $this->db->select("
+                {$this->db->dbprefix('products')}.id, 
+                {$this->db->dbprefix('products')}.code, 
+                {$this->db->dbprefix('products')}.name, 
+                {$this->db->dbprefix('products')}.price, 
+                {$this->db->dbprefix('product_variants')}.name as vname
+            ");
+        $this->db->where("type != 'combo' AND 
+                (
+                    {$this->db->dbprefix('products')}.name LIKE '%" . $term . "%' OR 
+                    {$this->db->dbprefix('products')}.code LIKE '%" . $term . "%' OR
+                    CONCAT({$this->db->dbprefix('products')}.name, ' (', {$this->db->dbprefix('products')}.code, ')') LIKE '%" . $term . "%'
+                )
+            ");
+        $this->db->join('product_variants', 'product_variants.product_id=products.id', 'left');
+        $this->db->join('enter_using_stock_items', 'enter_using_stock_items.product_id=products.id', 'left');
+        // $this->db->where('enter_using_stock_items.using_stock_id', $id);
+        $this->db->where("{$this->db->dbprefix('product_variants')}.name", null);
+        $this->db->group_by('products.id')->limit($limit);
+        $q = $this->db->get('products');
+        if ($q->num_rows() > 0) {
+            foreach (($q->result()) as $row) {
+                $data[] = $row;
+            }
+            return $data;
+        }
+        return false;
+    }
     public function getBomProductNames($term, $limit = 50)
     {
         $this->db->select('' . $this->db->dbprefix('products') . '.id, 
@@ -2090,7 +2120,19 @@ class Products_model extends CI_Model
         }
         return false;
     }
-
+    public function getTotalQTYByUsingID($using_id = false)
+    {
+        $this->db->select('SUM(bpas_enter_using_stock_items.qty_use) as total_qty');
+        $this->db->from('enter_using_stock_items');
+        $this->db->where('enter_using_stock_items.using_stock_id', $using_id);
+        $this->db->group_by('using_stock_id');
+        $q = $this->db->get();
+        if ($q && $q->num_rows() > 0) {
+            return $q->row()->total_qty;
+        }
+        return 0;
+    }
+   
     public function getUsingStockItemsByRef($ref)
     {
         $this->db->select('enter_using_stock_items.id as e_id,
@@ -2098,6 +2140,7 @@ class Products_model extends CI_Model
                             enter_using_stock_items.code as code,
                             enter_using_stock_items.description,
                             enter_using_stock_items.qty_use,
+                            COALESCE(SUM(bpas_enter_using_stock_items.qty_use), 0) as total_qty_use,
                             enter_using_stock_items.qty_by_unit,
                             enter_using_stock_items.unit,
                             enter_using_stock_items.expiry,
@@ -2117,6 +2160,40 @@ class Products_model extends CI_Model
         $this->db->join('units', 'units.id = products.unit', 'left');
         $this->db->join('warehouses_products', 'enter_using_stock_items.warehouse_id = warehouses_products.warehouse_id and products.id = warehouses_products.product_id', 'left');
         $this->db->where('enter_using_stock_items.reference_no', $ref);
+        $this->db->group_by('e_id');
+        $q = $this->db->get();
+        if ($q) {
+            return $q->result();
+        } else {
+            return false;
+        }
+    }
+    public function getFinishStockItemsByRef($ref)
+    {
+        $this->db->select('enter_finish_stock_items.id as e_id,
+                            enter_finish_stock_items.code as code,
+                            enter_finish_stock_items.code as code,
+                            enter_finish_stock_items.description,
+                            enter_finish_stock_items.qty_use,
+                            enter_finish_stock_items.qty_by_unit,
+                            enter_finish_stock_items.unit,
+                            enter_finish_stock_items.expiry,
+                            enter_finish_stock_items.warehouse_id as wh_id,
+                            enter_finish_stock_items.option_id as option_id,
+                            products.name,
+                            products.cost,
+                            products.quantity,
+                            products.code as product_code,
+                            products.id as id,
+                            warehouses_products.quantity as qoh,
+                            products.unit as unit_type,
+                            units.name as unit_name
+                        ');
+        $this->db->from('enter_finish_stock_items');
+        $this->db->join('products', 'enter_finish_stock_items.code = products.code', 'left');
+        $this->db->join('units', 'units.id = products.unit', 'left');
+        $this->db->join('warehouses_products', 'enter_finish_stock_items.warehouse_id = warehouses_products.warehouse_id and products.id = warehouses_products.product_id', 'left');
+        $this->db->where('enter_finish_stock_items.reference_no', $ref);
         $this->db->group_by('e_id');
         $q = $this->db->get();
         if ($q) {
@@ -2289,6 +2366,24 @@ class Products_model extends CI_Model
         $q=$this->db->get();
         if($q){
             return $q->row();
+        }else{
+            return false;
+        }
+    }
+      public function get_enter_using_stock_item_by_using_id($id)
+    {
+        $this->db->select('enter_using_stock_items.*, products.name as product_name, expense_categories.name as exp_cate_name, enter_using_stock_items.unit as unit_name, products.cost, position.name as pname,reasons.description as rdescription, product_variants.qty_unit as variant_qty');
+        $this->db->from('enter_using_stock_items');
+        $this->db->join('products','products.code=enter_using_stock_items.code','left');
+        $this->db->join('position','enter_using_stock_items.description = position.id','left');
+        $this->db->join('reasons','enter_using_stock_items.reason = reasons.id','left');
+        $this->db->join('product_variants','enter_using_stock_items.option_id = product_variants.id','left');
+        $this->db->join('expense_categories','enter_using_stock_items.exp_cate_id = expense_categories.id','left');
+        $this->db->where('enter_using_stock_items.using_stock_id',$id);
+        
+        $q=$this->db->get();
+        if($q){
+            return $q->result();
         }else{
             return false;
         }
@@ -2550,7 +2645,7 @@ class Products_model extends CI_Model
         return FALSE;
     }
 
-    public function insert_enter_using_stock($data, $items, $stockmoves = array(), $accTrans = array())
+    public function insert_enter_using_stock($data, $items, $items_finish = array(), $stockmoves = array(), $accTrans = array())
     {
         $this->db->trans_start();
         if ($this->db->insert('enter_using_stock', $data)) {
@@ -2564,6 +2659,13 @@ class Products_model extends CI_Model
                     $this->db->update("projects_plan_items", array("projects_plan_items.quantity_used" => $new_qty_use), array("project_plan_id" => $data['plan_id'], "product_id" => $item['product_id']));
                 }
             }
+            if (!empty($items_finish)) {
+                foreach ($items_finish as $item_finish) {
+                    $item_finish['using_stock_id'] = $using_stock_id;
+                    $this->db->insert('enter_finish_stock_items', $item_finish);
+                }
+            }
+
             foreach ($stockmoves as $stockmove) {
 				$stockmove['transaction_id'] = $using_stock_id;
 				$this->db->insert('stock_movement', $stockmove);
@@ -2577,10 +2679,11 @@ class Products_model extends CI_Model
                     $this->db->insert('gl_trans', $accTran);
                 }
             }
-            if ($this->site->getReference('es') == $data['reference_no']) {
-                $this->site->updateReference('es');
-            } else if ($this->site->getReference('esr') == $data['reference_no']) {
-                $this->site->updateReference('esr');
+          
+            if ($this->site->getReference('es', $data['biller_id']) == $data['reference_no']) {
+                $this->site->updateReference('es', $data['biller_id']);
+            } else if ($this->site->getReference('esr', $data['biller_id']) == $data['reference_no']) {
+                $this->site->updateReference('esr', $data['biller_id']);
             } 
         } 
         $this->db->trans_complete();

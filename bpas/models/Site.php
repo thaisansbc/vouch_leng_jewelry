@@ -9569,7 +9569,7 @@ public function getCompanyByBillers($group_name)
     {
         $this->db->where("(option_id = '' OR option_id = 0)")->update("stock_movement", array("option_id" => null));
         $this->db->where("(serial_no = '' OR serial_no = 'NULL' OR serial_no = 'null')")->update("stock_movement", array("serial_no" => null));
-        $this->db->where("(expiry = '' OR expiry = '0000-00-00')")->update("stock_movement", array("expiry" => null));
+        // $this->db->where("(expiry = '' OR expiry = '0000-00-00')")->update("stock_movement", array("expiry" => null));
     }
 
     public function getProductRacks($biller_id = null)

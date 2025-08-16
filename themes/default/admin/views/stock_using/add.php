@@ -1,6 +1,7 @@
 <?php defined('BASEPATH') or exit('No direct script access allowed'); ?>
 <script type="text/javascript">
 	var count = 1;
+	var finishcount = 1;
     $(document).ready(function () {
 		<?php if ($this->input->post('customer')) { ?>
         $('#customer').val(<?= $this->input->post('customer') ?>).select2({
@@ -95,6 +96,64 @@
                 $(this).autocomplete("search");
             }
         });
+		$("#add_finish_item").autocomplete({
+            source: function (request, response) {
+				$.ajax({
+					type: 'get',
+					url: '<?= admin_url('products/suggestionsStock'); ?>',
+					dataType: "json",
+					data: {
+						term: request.term,
+						warehouse_id: $("#from_location").val(),
+						plan: $("#plan").val(),
+						address: $("#address").val()
+					},
+					success: function (data) {
+						response(data);
+					},error: function(e){
+						console.log(e);
+					}
+				});
+            },
+			minLength: 1,
+            autoFocus: false,
+            delay: 200,
+            response: function (event, ui) {
+                if ($(this).val().length >= 16 && ui.content[0].id == 0) {
+                    bootbox.alert('<?= lang('no_match_found') ?>', function () {
+                        $('#add_finish_item').focus();
+                    });
+                    $(this).val('');
+                }
+                else if (ui.content.length == 1 && ui.content[0].id != 0) {
+                    ui.item = ui.content[0];
+                    $(this).data('ui-autocomplete')._trigger('select', 'autocompleteselect', ui);
+                    $(this).autocomplete('close');
+                    $(this).removeClass('ui-autocomplete-loading');
+                }
+                else if (ui.content.length == 1 && ui.content[0].id == 0) {
+                    bootbox.alert('<?= lang('no_match_found') ?>', function () {
+                        $('#add_finish_item').focus();
+                    });
+                }
+            },
+            select: function (event, ui) {
+                event.preventDefault();
+                if (ui.item.id !== 0) {
+                    var row = add_finish_item(ui.item);
+                    if (row)
+                        $(this).val('');
+                } else {
+                    bootbox.alert('<?= lang('no_match_found') ?>');
+                }
+            }
+        });
+		$('#add_finish_item').bind('keypress', function (e) {
+            if (e.keyCode == 13) {
+                e.preventDefault();
+                $(this).autocomplete("search");
+            }
+        });
 		$("#date").datetimepicker({
 			format: site.dateFormats.js_ldate,
             fontAwesome: true,
@@ -111,6 +170,9 @@
 			if ('<?= $this->session->userdata('remove_usitem'); ?>' == '1') {
 				if (localStorage.getItem('usitems')) {
 					localStorage.removeItem('usitems');
+				}
+				if (localStorage.getItem('finishitems')) {
+					localStorage.removeItem('finishitems');
 				}
 				if (localStorage.getItem('from_location')) {
 					localStorage.removeItem('from_location');
@@ -365,7 +427,7 @@
 						</div>
 					</div>
 				</div>	
-				<div class="row">
+				<!-- <div class="row">
 					<div class="col-md-12 pr_form" id="sticker">
 						<div class="well well-sm">
 							<div class="form-group" style="margin-bottom:0;">
@@ -402,6 +464,118 @@
 						</div>
 					</div>
 				</div>
+				<div class="row">
+					<div class="col-md-12 pr_form" id="sticker">
+						<div class="well well-sm">
+							<div class="form-group" style="margin-bottom:0;">
+								<div class="input-group wide-tip">
+									<div class="input-group-addon" style="padding-left: 10px; padding-right: 10px;">
+									<i class="fa fa-2x fa-barcode addIcon"></i></div>
+									<?php echo form_input('add_item', '', 'class="form-control input-lg" id="add_item" placeholder="' . $this->lang->line("add_finish_product_to_order") . '"'); ?>
+								</div>
+							</div>
+							<div class="clearfix"></div>
+						</div>
+					</div>
+				</div>
+				<div class="row">
+					<div class="col-md-12 pr_form">
+						<div class="table-responsive">
+							<table id="UsData" class="table table-bordered table-hover table-striped table-condensed reports-table">
+								<thead>
+									<tr>
+										<th style="width:30% !important;"><span><?= lang("product"); ?></span></th>
+										<?php if ($Settings->product_expiry) {
+											echo '<th style="width:14% !important;">' . $this->lang->line("expiry_date") . '</th>';
+										} ?>
+										<th style="width:10% !important;"><?= lang("description"); ?></th>
+										<th style="width:8% !important;"><?= lang("QOH"); ?></th>
+										<th style="width:8% !important;"><?= lang("qty_use"); ?></th>
+										<th style="width:10% !important;"><?= lang("unit_variant"); ?></th>
+										<th style="width:10% !important;"><?= lang('project_qty'); ?></th>
+										<th style="width:2% !important;"><i class="fa fa-trash-o" aria-hidden="true"></i></th>
+									</tr>
+								</thead>
+								<tbody></tbody>
+							</table>
+						</div>
+					</div>
+				</div> -->
+				 <div class="col-md-12" id="sticker">
+                            <div class="well well-sm">
+                                <div class="form-group" style="margin-bottom:0;">
+                                    <div class="input-group wide-tip">
+                                        <div class="input-group-addon" style="padding-left: 10px; padding-right: 10px;"><i class="fa fa-2x fa-barcode addIcon"></i></a></div>
+                                        <?php echo form_input('add_item', '', 'class="form-control input-lg" id="add_item" placeholder="' . lang("add_raw_material_to_order") . '"'); ?>
+                                    </div>
+                                </div>
+                                <div class="clearfix"></div>
+                            </div>
+                        </div>
+
+                        <div class="col-md-12">
+                            <div class="control-group table-group">
+                                <label class="table-label"><?= lang("raw_material"); ?> *</label>
+                                <div class="controls table-controls">
+                                    <table id="UsData" class="table table-bordered table-hover table-striped table-condensed reports-table">
+										<thead>
+											<tr>
+												<th style="width:30% !important;"><span><?= lang("product"); ?></span></th>
+												<?php if ($Settings->product_expiry) {
+													echo '<th style="width:14% !important;">' . $this->lang->line("expiry_date") . '</th>';
+												} ?>
+												<th style="width:10% !important;"><?= lang("description"); ?></th>
+												<th style="width:8% !important;"><?= lang("QOH"); ?></th>
+												<th style="width:8% !important;"><?= lang("qty_use"); ?></th>
+												<th style="width:10% !important;"><?= lang("unit_variant"); ?></th>
+												<th style="width:10% !important;"><?= lang('project_qty'); ?></th>
+												<th style="width:2% !important;"><i class="fa fa-trash-o" aria-hidden="true"></i></th>
+											</tr>
+										</thead>
+										<tbody></tbody>
+									</table>
+                                </div>
+                            </div>
+                        </div>
+
+						<div class="clearfix"></div>
+                        <div class="col-md-12" id="sticker">
+                            <div class="well well-sm">
+                                <div class="form-group" style="margin-bottom:0;">
+                                    <div class="input-group wide-tip">
+                                        <div class="input-group-addon" style="padding-left: 10px; padding-right: 10px;">
+                                            <i class="fa fa-2x fa-barcode addIcon"></i></a></div>
+                                        <?php echo form_input('add_finish_item', '', 'class="form-control input-lg" id="add_finish_item" placeholder="' . lang("add_finished_good_to_order") . '"'); ?>
+                                    </div>
+                                </div>
+                                <div class="clearfix"></div>
+                            </div>
+                        </div>
+						
+						<div class="col-md-12">
+                            <div class="control-group table-group">
+                                <label class="table-label"><?= lang("finished_good"); ?> *</label>
+                                <div class="controls table-controls">
+                                    <table id="PFinish" class="table table-bordered table-hover table-striped table-condensed reports-table">
+										<thead>
+											<tr>
+												<th style="width:30% !important;"><span><?= lang("product"); ?></span></th>
+												<?php if ($Settings->product_expiry) {
+													echo '<th style="width:14% !important;">' . $this->lang->line("expiry_date") . '</th>';
+												} ?>
+												<th style="width:10% !important;"><?= lang("description"); ?></th>
+												<th style="width:8% !important;"><?= lang("QOH"); ?></th>
+												<th style="width:8% !important;"><?= lang("qty_use"); ?></th>
+												<th style="width:10% !important;"><?= lang("unit_variant"); ?></th>
+												<th style="width:10% !important;"><?= lang('project_qty'); ?></th>
+												<th style="width:2% !important;"><i class="fa fa-trash-o" aria-hidden="true"></i></th>
+											</tr>
+										</thead>
+										<tbody></tbody>
+									</table>
+                                </div>
+                            </div>
+                        </div>
 				<div class="row">
 					<div class="col-md-12">
 						<div class="form-group all">
