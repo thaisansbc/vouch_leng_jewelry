@@ -367,11 +367,9 @@
 						<div class="form-group">
 							<?= lang('authorize_by', 'authorize_by'); ?>
 							<?php
-                            
                                 foreach ($AllUsers as $AU) {
                                     $users[$AU->id] = $AU->username;
                                 }
-                          
                             echo form_dropdown('authorize_id', $users,'', 'class="form-control"  required  id="authorize_id" placeholder="' . lang("select") . ' ' . lang("authorize_id") . '" style="width:100%"')
                             ?>
 						</div>
@@ -427,80 +425,7 @@
 						</div>
 					</div>
 				</div>	
-				<!-- <div class="row">
-					<div class="col-md-12 pr_form" id="sticker">
-						<div class="well well-sm">
-							<div class="form-group" style="margin-bottom:0;">
-								<div class="input-group wide-tip">
-									<div class="input-group-addon" style="padding-left: 10px; padding-right: 10px;">
-									<i class="fa fa-2x fa-barcode addIcon"></i></div>
-									<?php echo form_input('add_item', '', 'class="form-control input-lg" id="add_item" placeholder="' . $this->lang->line("add_product_to_order") . '"'); ?>
-								</div>
-							</div>
-							<div class="clearfix"></div>
-						</div>
-					</div>
-				</div>
-				<div class="row">
-					<div class="col-md-12 pr_form">
-						<div class="table-responsive">
-							<table id="UsData" class="table table-bordered table-hover table-striped table-condensed reports-table">
-								<thead>
-									<tr>
-										<th style="width:30% !important;"><span><?= lang("product"); ?></span></th>
-										<?php if ($Settings->product_expiry) {
-											echo '<th style="width:14% !important;">' . $this->lang->line("expiry_date") . '</th>';
-										} ?>
-										<th style="width:10% !important;"><?= lang("description"); ?></th>
-										<th style="width:8% !important;"><?= lang("QOH"); ?></th>
-										<th style="width:8% !important;"><?= lang("qty_use"); ?></th>
-										<th style="width:10% !important;"><?= lang("unit_variant"); ?></th>
-										<th style="width:10% !important;"><?= lang('project_qty'); ?></th>
-										<th style="width:2% !important;"><i class="fa fa-trash-o" aria-hidden="true"></i></th>
-									</tr>
-								</thead>
-								<tbody></tbody>
-							</table>
-						</div>
-					</div>
-				</div>
-				<div class="row">
-					<div class="col-md-12 pr_form" id="sticker">
-						<div class="well well-sm">
-							<div class="form-group" style="margin-bottom:0;">
-								<div class="input-group wide-tip">
-									<div class="input-group-addon" style="padding-left: 10px; padding-right: 10px;">
-									<i class="fa fa-2x fa-barcode addIcon"></i></div>
-									<?php echo form_input('add_item', '', 'class="form-control input-lg" id="add_item" placeholder="' . $this->lang->line("add_finish_product_to_order") . '"'); ?>
-								</div>
-							</div>
-							<div class="clearfix"></div>
-						</div>
-					</div>
-				</div>
-				<div class="row">
-					<div class="col-md-12 pr_form">
-						<div class="table-responsive">
-							<table id="UsData" class="table table-bordered table-hover table-striped table-condensed reports-table">
-								<thead>
-									<tr>
-										<th style="width:30% !important;"><span><?= lang("product"); ?></span></th>
-										<?php if ($Settings->product_expiry) {
-											echo '<th style="width:14% !important;">' . $this->lang->line("expiry_date") . '</th>';
-										} ?>
-										<th style="width:10% !important;"><?= lang("description"); ?></th>
-										<th style="width:8% !important;"><?= lang("QOH"); ?></th>
-										<th style="width:8% !important;"><?= lang("qty_use"); ?></th>
-										<th style="width:10% !important;"><?= lang("unit_variant"); ?></th>
-										<th style="width:10% !important;"><?= lang('project_qty'); ?></th>
-										<th style="width:2% !important;"><i class="fa fa-trash-o" aria-hidden="true"></i></th>
-									</tr>
-								</thead>
-								<tbody></tbody>
-							</table>
-						</div>
-					</div>
-				</div> -->
+		
 				 <div class="col-md-12" id="sticker">
                             <div class="well well-sm">
                                 <div class="form-group" style="margin-bottom:0;">
