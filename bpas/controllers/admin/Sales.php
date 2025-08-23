@@ -738,6 +738,7 @@ class Sales extends MY_Controller
                 'bed_id'               => $this->input->post('bed'),
                 'surcharge'            => $this->bpas->formatDecimal($surcharge),
             ];
+            
             $fuel_sale_id = $this->input->post('fuel_sale_id');
             $repair_id = $this->input->post('repair_id');
             if($fuel_sale_id && !$fuel_customers){
