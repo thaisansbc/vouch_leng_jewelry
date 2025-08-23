@@ -6588,6 +6588,24 @@ class Products extends MY_Controller
                 //     $this->session->set_flashdata('error', $this->lang->line("unexpected_value") );
                 //     redirect($_SERVER["HTTP_REFERER"]);
                 // } 
+                $combo_products = json_decode($_POST['product_combo'][$r]);
+                // var_dump($combo_products);
+                // exit();
+                foreach ($combo_products as $combo_product) {
+                            $combo_id    = $combo_product->id;
+                            $combo_code  = $combo_product->code;
+                            $combo_name  = $combo_product->name; 
+                            $combo_wax_setting = $combo_product->wax_setting_qty;
+                            $combo_casting = $combo_product->casting_qty;
+                            $combo_filing_pre_polishing = $combo_product->filing_pre_polishing_qty;
+                            $combo_stone_setting = $combo_product->stone_setting_qty;
+                            $combo_final_polishing = $combo_product->final_polishing_qty;
+                            $combo_quality_inspection = $combo_product->quality_inspection_qty;
+                            $combo_packaging = $combo_product->packaging_qty;
+
+                }
+                // var_dump($combo_products);
+                // exit();
                 $product_details = $this->site->getProductByID($product_id);
                 $unit            = $this->site->getProductUnit($product_id, $unit_id);
                 $stockmoves[] = array(
@@ -6622,6 +6640,7 @@ class Products extends MY_Controller
                     'warehouse_id'    => $warehouse_id,
                     'cost'            => $product_cost,
                     'reference_no'    => $return_ref,
+                    'type'            => 'use',
                     'option_id'       => is_numeric($option_id) ? $option_id : null
                 );
                 $total_item_cost += $total_cost;
@@ -6800,6 +6819,8 @@ class Products extends MY_Controller
                     'warehouse_id'    => $warehouse_id,
                     'cost'            => $product_cost_finish,
                     'reference_no'    => $return_ref,
+                    'combo_product'   => json_encode($combo_products),
+                    'type'            => 'return',
                     'option_id'       => is_numeric($option_id_finish) ? $option_id_finish : null
                 );
                 $total_item_cost += $total_cost;
@@ -6891,9 +6912,9 @@ class Products extends MY_Controller
                     'filing_pre_polishing_qty' => $row->qty_use,
                     'stone_setting_qty' => $row->qty_use,
                     'total_stone_setting_qty' => $total_qty_use,
-                    'final_polishing_qty' => $row->qty_use,
-                    'quality_inspection_qty' => $row->qty_use,
-                    'packaging_qty' => $row->qty_use,
+                    'final_polishing_qty' => null,
+                    'quality_inspection_qty' => null,
+                    'packaging_qty' => null,
                     'type' => 'use',
                 );
                 $r++;$t++;
@@ -6912,10 +6933,10 @@ class Products extends MY_Controller
                     'name' => $pre_row->name,
                     'code' => $pre_row->product_code,
                     'price' => $pre_row->cost,
-                    'wax_setting_qty' => $pre_row->qty_use,
-                    'casting_qty' => $pre_row->qty_use,
-                    'filing_pre_polishing_qty' => $pre_row->qty_use,
-                    'stone_setting_qty' => $pre_row->qty_use,
+                    'wax_setting_qty' => null,
+                    'casting_qty' => null,
+                    'filing_pre_polishing_qty' => null,
+                    'stone_setting_qty' => null,
                     'total_stone_setting_qty' => $total_qty_use,
                     'final_polishing_qty' => $pre_row->qty_use,
                     'quality_inspection_qty' => $pre_row->qty_use,

@@ -776,7 +776,9 @@ function FinishloadItems() {
 				qty_old 		= item.row.qty_old,  
 				item_proj		= item.project_qty,
 				have_plan		= item.row.have_plan,
+				combo_items 	= item.combo_items,
 				stock_item_id 	= item.stock_item;
+
 				item_qty_use    = formatDecimal(item.row.qty_use);
 			var opt = $("<select id=\"unit_finish\" name=\"unit_finish\[\]\" style=\"padding-top: 2px !important;\" class=\"form-control unit_finish\" />");
             if (item.option_unit !== false) {
@@ -823,12 +825,31 @@ function FinishloadItems() {
 			if (item.reason) {
 				item_reason = item.reason;
 			}
-			
 			var row_no = (new Date).getTime();
 			var newTr = $('<tr id="row_' + row_no + '" class="row_' + item_id + '" data-item-id="' + item_id + '"></tr>');			
-			tr_html = '<td><input type="hidden" value="'+ product_id +'" name="product_id_finish[]"/><input type="hidden" value="'+ item_code +'" name="item_code_finish[]"/><input type="hidden" value="'+ item_name +'" name="name_finish[]"/><input type="hidden" value="'+ item_cost +'" name="cost_finish[]"/>';
-			tr_html += 
-			tr_html += '<input type="hidden" value="'+ stock_item_id +'" name="stock_item_id_finish[]"/>'+ item_label +'<i class="pull-right fa fa-edit tip pointer edit_finish" id="' +row_no +'" data-item="' +item_id +'" title="Edit" style="cursor:pointer"></i></td>';
+			tr_html = '<td><input type="hidden" value="'+ product_id +'" name="product_id_finish[]"/><input type="hidden" value="'+ item_code +'" name="item_code_finish[]"/><input type="hidden" value="'+ item_name +'" name="name_finish[]"/><input type="hidden" value="'+ item_cost +'" name="cost_finish[]"/><input type="hidden" value="'+ stock_item_id +'" name="stock_item_id_finish[]"/>'+ item_label;
+			if (combo_items) {
+				tr_html += '<div style="color:blue;font-size:13px;">';
+					$.each(combo_items, function () {
+					let steps = [
+						formatQuantity2(this.wax_setting_qty),
+						formatQuantity2(this.casting_qty),
+						formatQuantity2(this.filing_pre_polishing_qty),
+						formatQuantity2(this.stone_setting_qty),
+						formatQuantity2(this.final_polishing_qty),
+						formatQuantity2(this.quality_inspection_qty),
+						formatQuantity2(this.packaging_qty)
+					]; 
+					steps = steps.filter(v => v !== null && v !== undefined && v !== ''); 
+					tr_html += "<input type='hidden' name='product_combo[]' value='"+JSON.stringify(combo_items)+"'/>";
+					tr_html += (this.type === 'return'
+						? '<i class="fa fa-undo"></i><span>'
+						: '<i class="fa fa-cogs"></i><span>'
+					) + ' ' + this.name + '</span>: ' + steps.join('>') + '<br>';
+					});
+				tr_html += '</div>';
+			}
+			tr_html += '<i class="pull-right fa fa-table fa-1x tip pointer edit_finish" id="' +row_no +'" data-item="' +item_id +'" title="Edit" style="cursor:pointer"></i></td>';
 			if (site.settings.product_expiry == 1) {
 				tr_html += '<td>'+(exp_date.get(0).outerHTML)+'</td>';
 			}
