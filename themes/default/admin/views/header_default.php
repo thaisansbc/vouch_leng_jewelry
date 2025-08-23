@@ -2502,7 +2502,7 @@
                                     </li>
                                 <?php } if($Owner || $Admin || $GP['attendances-list_devices']){ ?>
                                     <li id="attendances_list_devices">
-                                        <a class="submenu" href="<?= admin_url('attendances/'); ?>">
+                                        <a class="submenu" href="<?= admin_url('attendances/list_devices'); ?>">
                                             <i class="fa-regular fa fa-clock"></i><span class="text"> <?= lang('devices'); ?></span>
                                         </a>
                                     </li>

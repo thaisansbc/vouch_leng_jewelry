@@ -4269,6 +4269,8 @@ class Products extends MY_Controller
                         // 'barcode' => $this->product_barcode($product->code, $product->barcode_symbology, $bci_size),
                         'barcode'    => $product->code,
                         'weight'     => $product->weight,
+                        'details'    => $product->details,
+                        'product_details'    => $product->product_details,
                         'bcs'        => $product->barcode_symbology,
                         'bcis'       => $bci_size,
                         'price'      => $this->input->post('price') ? $this->bpas->formatMoney($product->price, 'none') : false,
