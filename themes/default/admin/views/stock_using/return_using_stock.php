@@ -248,6 +248,8 @@
 		localStorage.setItem('account', '<?= $using_stock->account; ?>');
 		localStorage.setItem('plan', '<?= $using_stock->plan_id; ?>');
 	<?php } ?>
+	console.log(localStorage.getItem('finishitems'));
+	
 </script>
 <?php echo admin_form_open("products/return_using_stock/". $id); ?>
 <div class="box">

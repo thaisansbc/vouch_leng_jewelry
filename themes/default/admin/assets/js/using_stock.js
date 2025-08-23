@@ -823,11 +823,12 @@ function FinishloadItems() {
 			if (item.reason) {
 				item_reason = item.reason;
 			}
-			console.log(item);
 			
 			var row_no = (new Date).getTime();
 			var newTr = $('<tr id="row_' + row_no + '" class="row_' + item_id + '" data-item-id="' + item_id + '"></tr>');			
-			tr_html = '<td><input type="hidden" value="'+ product_id +'" name="product_id_finish[]"/><input type="hidden" value="'+ item_code +'" name="item_code_finish[]"/><input type="hidden" value="'+ item_name +'" name="name_finish[]"/><input type="hidden" value="'+ item_cost +'" name="cost_finish[]"/> <input type="hidden" value="'+ stock_item_id +'" name="stock_item_id_finish[]"/>'+ item_label +'<i class="pull-right fa fa-edit tip pointer edit_finish" id="' +row_no +'" data-item="' +item_id +'" title="Edit" style="cursor:pointer"></i></td>';
+			tr_html = '<td><input type="hidden" value="'+ product_id +'" name="product_id_finish[]"/><input type="hidden" value="'+ item_code +'" name="item_code_finish[]"/><input type="hidden" value="'+ item_name +'" name="name_finish[]"/><input type="hidden" value="'+ item_cost +'" name="cost_finish[]"/>';
+			tr_html += 
+			tr_html += '<input type="hidden" value="'+ stock_item_id +'" name="stock_item_id_finish[]"/>'+ item_label +'<i class="pull-right fa fa-edit tip pointer edit_finish" id="' +row_no +'" data-item="' +item_id +'" title="Edit" style="cursor:pointer"></i></td>';
 			if (site.settings.product_expiry == 1) {
 				tr_html += '<td>'+(exp_date.get(0).outerHTML)+'</td>';
 			}

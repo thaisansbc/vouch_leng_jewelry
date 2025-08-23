@@ -6161,9 +6161,7 @@ class Products extends MY_Controller
             } else {
                 krsort($products);
             }
-            //end using item
-            
-
+            //end using item 
             //start finish data
             $j = sizeof($_POST['product_id_finish']);
             for ($v = 0; $v < $j; $v++) {
@@ -6189,138 +6187,7 @@ class Products extends MY_Controller
                 $product_details_finish = $this->site->getProductByID($product_id_finish);
                 $unit_finish            = $this->site->getProductUnit($product_id_finish, $unit_id_finish);
                 $real_unit_cost_finish  = $this->site->getAVGCost($product_details_finish->id, $date);
-                // $product_id   = $_POST['product_id'][$r];
-                // $product_code = $_POST['item_code'][$r];
-                // $product_name = $_POST['name'][$r];
-                // $product_cost = $_POST['cost'][$r];
-                // $description  = $_POST['description'][$r];
-                // $qty_use      = $_POST['qty_use'][$r];
-                // $unit_id      = $_POST['unit'][$r];
-                // $expiry       = isset($_POST['exp'][$r]) && !empty($_POST['exp'][$r]) && $_POST['exp'][$r] != 'false' && $_POST['exp'][$r] != 'undefined' && $_POST['exp'][$r] != 'null' && $_POST['exp'][$r] != 'NULL' && $_POST['exp'][$r] != '00/00/0000' && $_POST['exp'][$r] != '' ? $_POST['exp'][$r] : null; 
-                // $qty_balance  = $qty_use;
-                // $total_cost   = $product_cost * $qty_balance; 
-                // $option_id    = null;
-                // $variant      = $this->site->getProductVariantByID($product_id, $unit_id);
-                // if ($variant) {
-                //     $option_id = (is_numeric($variant->id) ? $variant->id : null);
-                // }
-                // if ($qty_balance == 0) {
-                //     $this->session->set_flashdata('error', $this->lang->line("unexpected_value") );
-                //     redirect($_SERVER["HTTP_REFERER"]);
-                // } 
-                // $product_details = $this->site->getProductByID($product_id);
-                // $unit            = $this->site->getProductUnit($product_id, $unit_id);
                 $real_unit_cost  = $this->site->getAVGCost($product_details->id, $date);
-                // if ($this->Settings->accounting_method == '0') {
-                //     $costs = $this->site->getFifoCost($product_details->id, $qty_balance, $stockmoves);
-                // } else if ($this->Settings->accounting_method == '1') {
-                //     $costs = $this->site->getLifoCost($product_details->id, $qty_balance, $stockmoves);
-                // } else if ($this->Settings->accounting_method == '3') {
-                //     $costs = $this->site->getProductMethod($product_details->id, $qty_balance, $stockmoves);
-                // } else {
-                //     $costs = false;
-                // }
-                // if ($costs) {
-                //     $productAcc = $this->site->getProductAccByProductId($product_id);
-                //     foreach ($costs as $cost_item) { 
-                //         $stockmoves[] = array(
-                //             'transaction'    => 'UsingStock',
-                //             'product_id'     => $product_details->id,
-                //             'product_type'   => $product_details->type,
-                //             'product_code'   => $product_details->code,
-                //             'product_name'   => $product_details->name,
-                //             'option_id'      => $option_id,
-                //             'quantity'       => $cost_item['quantity'] * (-1),
-                //             'unit_quantity'  => $unit->unit_qty,
-                //             'unit_code'      => $unit->code,
-                //             'unit_id'        => $unit_id,
-                //             'warehouse_id'   => $warehouse_id,
-                //             'expiry'         => $expiry,
-                //             'date'           => $date,
-                //             'real_unit_cost' => $cost_item['cost'],
-                //             'serial_no'      => null,
-                //             'reference_no'   => $reference_no,
-                //             'user_id'        => $this->session->userdata('user_id'),
-                //         );
-                //         if ($this->Settings->module_account == 1) {        
-                //             $accTrans[] = array(
-                //                 'tran_type'    => 'UsingStock',
-                //                 'tran_date'    => $date,
-                //                 'reference_no' => $reference_no,
-                //                 'account_code' => $this->accounting_setting->default_stock,
-                //                 'amount'       => -($cost_item['cost'] * abs($cost_item['quantity'])),
-                //                 'narrative'    => 'Product Code: '.$product_code.'#'.'Qty: '.$cost_item['quantity'].'#'.'Cost: '.$cost_item['cost'],
-                //                 'description'  => $note,
-                //                 'biller_id'    => $biller_id,
-                //                 'project_id'   => $project_id,
-                //                 'customer_id'  => $customer_id,
-                //                 'created_by'   => $this->session->userdata('user_id'),
-                //             );
-                //             $accTrans[] = array(
-                //                 'tran_type'    => 'UsingStock',
-                //                 'tran_date'    => $date,
-                //                 'reference_no' => $reference_no,
-                //                 'account_code' => $this->accounting_setting->default_stock_using,
-                //                 'amount'       => ($cost_item['cost'] * abs($cost_item['quantity'])),
-                //                 'narrative'    => 'Product Code: '.$product_code.'#'.'Qty: '.$cost_item['quantity'].'#'.'Cost: '.$cost_item['cost'],
-                //                 'description'  => $note,
-                //                 'biller_id'    => $biller_id,
-                //                 'project_id'   => $project_id,
-                //                 'customer_id'  => $customer_id,
-                //                 'created_by'   => $this->session->userdata('user_id'),
-                //             );
-                //         }
-                //     }
-                // } else {
-                //     $stockmoves[] = array(
-                //         'transaction'    => 'UsingStock',
-                //         'product_id'     => $product_details->id,
-                //         'product_type'   => $product_details->type,
-                //         'product_code'   => $product_details->code,
-                //         'product_name'   => $product_details->name,
-                //         'option_id'      => $option_id,
-                //         'quantity'       => (-1) * $qty_balance,
-                //         'unit_quantity'  => $unit->unit_qty,
-                //         'unit_code'      => $unit->code,
-                //         'unit_id'        => $unit_id,
-                //         'warehouse_id'   => $warehouse_id,
-                //         'expiry'         => $expiry,
-                //         'date'           => $date,
-                //         'real_unit_cost' => $product_details->cost,
-                //         'serial_no'      => null,
-                //         'reference_no'   => $reference_no,
-                //         'user_id'        => $this->session->userdata('user_id'),
-                //     );
-                //     if ($this->Settings->module_account == 1) { 
-                //         $productAcc = $this->site->getProductAccByProductId($product_details->id);
-                //         $accTrans[] = array(
-                //             'tran_type'    => 'UsingStock',
-                //             'tran_date'    => $date,
-                //             'reference_no' => $reference_no,
-                //             'account_code' => $this->accounting_setting->default_stock,
-                //             'amount'       => -($product_details->cost * abs($qty_balance)),
-                //             'narrative'    => 'Product Code: '.$product_code.'#'.'Qty: '.$qty_balance.'#'.'Cost: '.$product_details->cost,
-                //             'description'  => $note,
-                //             'biller_id'    => $biller_id,
-                //             'project_id'   => $project_id,
-                //             'customer_id'  => $customer_id,
-                //             'created_by'   => $this->session->userdata('user_id'),
-                //         );
-                //         $accTrans[] = array(
-                //             'tran_type'    => 'UsingStock',
-                //             'tran_date'    => $date,
-                //             'reference_no' => $reference_no,
-                //             'account_code' => $this->accounting_setting->default_stock_using,
-                //             'amount'       => ($product_details->cost * abs($qty_balance)),
-                //             'narrative'    => 'Product Code: '.$product_code.'#'.'Qty: '.$qty_balance.'#'.'Cost: '.$product_details->cost,
-                //             'description'  => $note,
-                //             'biller_id'    => $biller_id,
-                //             'project_id'   => $project_id,
-                //             'customer_id'  => $customer_id,
-                //             'created_by'   => $this->session->userdata('user_id'),
-                //         );
-                //     }
-                // }
                 $products_finish[] = array(
                     'product_id'      => $product_id_finish,
                     'code'            => $product_code_finish,
@@ -6336,24 +6203,6 @@ class Products extends MY_Controller
                     'reference_no'    => $reference_no,
                     'option_id'       => is_numeric($option_id_finish) ? $option_id_finish : null
                 );
-                // var_dump($products_finish);
-                // exit();
-                // $products[] = array(
-                //     'product_id'      => $product_id,
-                //     'code'            => $product_code,
-                //     'product_name'    => $product_name,
-                //     'description'     => $description,
-                //     'qty_use'         => $qty_balance,
-                //     'qty_by_unit'     => $qty_use,
-                //     'product_unit_id' => $unit_id,
-                //     'unit'            => $unit->name,
-                //     'expiry'          => $expiry,
-                //     'warehouse_id'    => $warehouse_id,
-                //     'cost'            => $product_cost,
-                //     'reference_no'    => $reference_no,
-                //     'option_id'       => is_numeric($option_id) ? $option_id : null
-                // );
-                // $total_item_cost += $total_cost;
             }
             if (empty($products_finish)) {
                 $this->session->set_flashdata('error', $this->lang->line("no_data_select") );
@@ -6406,7 +6255,7 @@ class Products extends MY_Controller
                 $biller_id = $this->session->userdata('biller_id');    
             }
             $this->data['biller_id']    = $biller_id;
-            $this->data['reference']    = $this->site->getReference('es', $biller_id);
+            $this->data['reference']    = $this->site->getReference('es');
             if ($purchase_id) {
                 $this->data['items']    = $this->products_model->getPurcahseItemByPurchaseID($purchase_id);
                 $this->data['purchase'] = $this->products_model->getPurchaseByID($purchase_id);
@@ -7011,11 +6860,9 @@ class Products extends MY_Controller
             $this->data['id']           = $id;
             $wh_id             = $getUsingStock->warehouse_id;
             $reference_no      = $getUsingStock->reference_no;
-
             // Get Using Stock Items
             $getUsingStockItem = $this->products_model->getUsingStockItemsByRef($reference_no);
             $total_qty_use = $this->products_model->getTotalQTYByUsingID($id);
-            // var_dump($total_qty_use);exit();
             $c = str_replace(".", "", microtime(true));
             $r = 0; $pr = []; $t = 0;
             foreach ($getUsingStockItem as $row) {
@@ -7053,7 +6900,6 @@ class Products extends MY_Controller
             }
             $this->data['items'] = json_encode($pr);   
             // End Get Using Stock Items
-          
             // Get Finished Using Stock
             $getUsingStockItem = $this->products_model->getFinishStockItemsByRef($reference_no);
             // var_dump($getUsingStockItem);exit();
@@ -7095,11 +6941,11 @@ class Products extends MY_Controller
                 $fpr[$ri] = array('id' => ($c + $r), 'item_id' => $row->id, 'label' => $row->name . " (" . $row->product_code . ")", 'row' => $row, 'option_unit' => $option_unit, 'project_qty' => $row->project_qty, 'combo_items' => array_merge($use_product, $finish_product), 'stock_item' => $row->e_id, 'expiry_date' => $expiry_date, 'type' => 'return');
                 $r++;
             }
+            // var_dump($fpr);
             $this->data['items_finish'] = json_encode($fpr);   
             // var_dump($this->data['items_finish']);
             // exit();
-            // End Get Finished Using Stock
-
+            // End Get Finished Using Stock 
             $this->data['modal_js'] = $this->site->modal_js();
             $bc = array(array('link' => base_url(), 'page' => lang('home')), array('link' => admin_url('products'), 'page' => lang('products')), array('link' => '#', 'page' => lang('return_using_stock')));
             $meta = array('page_title' => lang('return_using_stock'), 'bc' => $bc);
@@ -11530,4 +11376,5 @@ class Products extends MY_Controller
             $this->bpas->send_json([['id' => 0, 'label' => lang('no_match_found'), 'value' => $term]]);
         }
     }
+
 }
