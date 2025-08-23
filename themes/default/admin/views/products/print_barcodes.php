@@ -241,28 +241,34 @@
                                             echo '
                                             <table width="100%">
                                                 <tr>
-                                                    <td width="33%" style="padding-top: 5px;font-weight: bold;padding-left:15px;">';
-                                                        if ($item['name']) {
-                                                            echo '<span style="font-size: 9px;" class="barcode_name">' . character_limiter($item['name'], 25) . '</span>';
+                                                    <td width="33%" style="font-weight: bold;padding-left:15px;">';
+                                                        if ($item['product_details']) {
+                                                            echo '<span style="margin: 0 0 0px; padding-top: 5px; font-size: 9px; white-space: nowrap; writing-mode: vertical-rl;" class="barcode_name">' . $item['product_details']. '</span>';
                                                         }
+                                                        // if ($item['name']) {
+                                                        //     echo '<span style="font-size: 9px;" class="barcode_name">' . character_limiter($item['name'], 25) . '</span>';
+                                                        // }
                                                         // if ($item['weight']) {
                                                         //     echo '<span style="font-size: 9px;" class="barcode_name">' . $this->bpas->formatDecimal($item['weight']) . '</span>';
                                                         // }
                                                         if ($item['price']) {
-                                                            echo '<span class="barcode_price" style="display: block; font-size: 9px; font-weight: bold; text-align: left; margin-bottom: 5%; margin-right: 20px;">';
-                                                            if ($item['currencies']) {
-                                                                foreach ($currencies as $currency) {
-                                                                    echo  $currency->code . ': ' . $this->bpas->formatMoney($item['rprice'] * $currency->rate, 'none') . ', ';
-                                                                }
-                                                            } else {
-                                                                echo "$".$item['price'];
-                                                            }
-                                                            echo '</span> ';
+                                                            // echo '<span class="barcode_price" style="display: block; font-size: 9px; font-weight: bold; text-align: left; margin-bottom: 5%; margin-right: 20px;">';
+                                                            // if ($item['currencies']) {
+                                                            //     foreach ($currencies as $currency) {
+                                                            //         echo  $currency->code . ': ' . $this->bpas->formatMoney($item['rprice'] * $currency->rate, 'none') . ', ';
+                                                            //     }
+                                                            // } else {
+                                                            //     echo "$".$item['price'];
+                                                            // }
+                                                            // echo '</span> ';
                                                         }
                                             echo    '</td>';
                                             echo    '<td width="33%">';
-                                                        echo '<span style="font-size: 9px; margin-top: 5px;font-weight: bold;" class="barcode_name">' . 'Vouch Leng Jewellery'. '</span>';
-                                                        echo '<span class="barcode_image"><img src="' . admin_url('products/barcode/' . $item['barcode'] . '/' . $item['bcs'] . '/' . $item['bcis']) . '" alt="' . $item['barcode'] . '" class="bcimg" style="width: auto !important; height: 25px !important;"/></span>';
+                                                        if ($item['details']) {
+                                                            echo '<span style="margin: 0 0 0px; padding-top: 5px; font-weight: bold; font-size: 9px;white-space: nowrap; writing-mode: sideways-lr; class="barcode_name">' . $item['details']. '</span>';
+                                                        }
+                                                        // echo '<span style="font-size: 9px; margin-top: 5px;font-weight: bold;" class="barcode_name">' . 'Vouch Leng Jewellery'. '</span>';
+                                                        // echo '<span class="barcode_image"><img src="' . admin_url('products/barcode/' . $item['barcode'] . '/' . $item['bcs'] . '/' . $item['bcis']) . '" alt="' . $item['barcode'] . '" class="bcimg" style="width: auto !important; height: 25px !important;"/></span>';
                                             echo   '</td>';
                                             echo ' <td width="35%"></td>';
 
