@@ -21,13 +21,17 @@ class Connect
         $chksum = 0;
         $session_id = 0;
         $reply_id = -1 + Util::USHRT_MAX;
+        
 
         $buf = Util::createHeader($command, $chksum, $session_id, $reply_id, $command_string);
+// var_dump($self->_zkclient, $buf, strlen($buf), 0, $self->_ip, $self->_port);exit();
 
         socket_sendto($self->_zkclient, $buf, strlen($buf), 0, $self->_ip, $self->_port);
 
         try {
+
             @socket_recvfrom($self->_zkclient, $self->_data_recv, 1024, 0, $self->_ip, $self->_port);
+            
             if (strlen($self->_data_recv) > 0) {
                 $u = unpack('H2h1/H2h2/H2h3/H2h4/H2h5/H2h6', substr($self->_data_recv, 0, 8));
 
@@ -37,6 +41,8 @@ class Connect
                 }
 
                 $self->_session_id = $session;
+// var_dump(Util::checkValid($self->_data_recv));exit();
+
                 return Util::checkValid($self->_data_recv);
             } else {
                 return false;
