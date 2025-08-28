@@ -16,6 +16,8 @@
     }
 ?>
 <script>
+    var oTable;
+
     $(document).ready(function () {
 		function row_statusX(x) {
 			if(x == null) {
@@ -32,7 +34,8 @@
 				return '<div class="text-center"><span class="label label-default">'+lang[x]+'</span></div>';
 			}
 		}
-        $('#UnitTable').dataTable({
+        
+        oTable = $('#UsingStockTable').dataTable({
             "aaSorting": [[7, "desc"]],
             "aLengthMenu": [[10, 25, 50, 100, -1], [10, 25, 50, 100, "<?= lang('all') ?>"]],
             "iDisplayLength": <?= $Settings->rows_per_page ?>,
@@ -45,7 +48,7 @@
                 });
                 $.ajax({'dataType': 'json', 'type': 'POST', 'url': sSource, 'data': aoData, 'success': fnCallback});
             },
-
+            
 			'fnRowCallback': function (nRow, aaData, iDisplayIndex) {
 					var action = $('td:eq(9)', nRow);
 					var returned = aaData[8];
@@ -55,7 +58,12 @@
 					} else {
 						action.find('.edit_return').remove();
 					}
-				return nRow;
+                    var oSettings = oTable.fnSettings();
+                    nRow.id = aaData[0] + '___' + aaData[8];
+                    // nRow.type = aaData[0];
+                    // nRow.value = aaData[8];
+                    nRow.className = "using_stock_link";
+                    return nRow;
 			},
 		    "aoColumns": [
         		{"bSortable": false, "mRender": checkbox},
@@ -236,7 +244,7 @@
                 </div>
                 <div class="clearfix"></div>
                 <div class="table-responsive">
-                    <table id="UnitTable" class="table table-condensed table-bordered table-hover table-striped">
+                    <table id="UsingStockTable" class="table table-condensed table-bordered table-hover table-striped">
                         <thead>
                             <tr>
                                 <th style="min-width:30px; width: 30px; text-align: center;">
