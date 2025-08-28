@@ -2067,7 +2067,9 @@ class Products_model extends CI_Model
                     }
                 }
                 $this->site->deleteStockmoves('UsingStock', $id);
+                $this->site->deleteStockmoves('FinishStock', $id);
                 $this->site->deleteAccTran('UsingStock', $id);
+                $this->site->deleteAccTran('FinishStock', $id);
                 if ($this->Settings->accounting_method == '0') {
                     $items = $this->getUsingStockItems($id);
                     foreach ($items as $item) {
@@ -2388,9 +2390,27 @@ class Products_model extends CI_Model
             return false;
         }
     }
+    public function get_enter_finish_stock_item_by_ref($ref)
+    {
+        $this->db->select('enter_finish_stock_items.*, products.name as product_name, expense_categories.name as exp_cate_name, enter_finish_stock_items.unit as unit_name, products.cost, position.name as pname,reasons.description as rdescription, product_variants.qty_unit as variant_qty, "Finish" as ptype');
+        $this->db->from('enter_finish_stock_items');
+        $this->db->join('products','products.code=enter_finish_stock_items.code','left');
+        $this->db->join('position','enter_finish_stock_items.description = position.id','left');
+        $this->db->join('reasons','enter_finish_stock_items.reason = reasons.id','left');
+        $this->db->join('product_variants','enter_finish_stock_items.option_id = product_variants.id','left');
+        $this->db->join('expense_categories','enter_finish_stock_items.exp_cate_id = expense_categories.id','left');
+        $this->db->where('enter_finish_stock_items.reference_no',$ref);
+        
+        $q=$this->db->get();
+        if($q){
+            return $q->result();
+        }else{
+            return false;
+        }
+    }
     public function get_enter_using_stock_item_by_ref($ref)
     {
-        $this->db->select('enter_using_stock_items.*, products.name as product_name, expense_categories.name as exp_cate_name, enter_using_stock_items.unit as unit_name, products.cost, position.name as pname,reasons.description as rdescription, product_variants.qty_unit as variant_qty');
+        $this->db->select('enter_using_stock_items.*, products.name as product_name, expense_categories.name as exp_cate_name, enter_using_stock_items.unit as unit_name, products.cost, position.name as pname,reasons.description as rdescription, product_variants.qty_unit as variant_qty, combo_product');
         $this->db->from('enter_using_stock_items');
         $this->db->join('products','products.code=enter_using_stock_items.code','left');
         $this->db->join('position','enter_using_stock_items.description = position.id','left');

@@ -2027,6 +2027,21 @@ $(document).ready(function () {
         $('#myModal').modal('show');
         //window.location.href = site.base_url + 'products/view/' + $(this).parent('.product_link').attr('id');
     });
+     $('body').on('click', '.using_stock_link td:not(:first-child, :nth-child(2), :last-child)', function() {
+        var id_type =   ($(this)
+                .parent('.using_stock_link')
+                .attr('id')).split("___");
+                console.log(id_type);
+                
+        $('#myModal').modal({
+            remote: site.base_url +
+                'products/modal_using_stock_view/' +
+                id_type[0] + '/' +
+                id_type[1],
+        });
+        $('#myModal').modal('show');
+        //window.location.href = site.base_url + 'products/view/' + $(this).parent('.product_link').attr('id');
+    });
     $('body').on('click', '.asset_link td:not(:first-child, :nth-child(2), :last-child)', function() {
         $('#myModal').modal({
             remote: site.base_url +

@@ -3999,7 +3999,7 @@ class Products extends MY_Controller
 
         $this->load->view($this->theme . 'products/modal_view', $this->data);
     }
-
+    
     public function modal_view1($id = null)
     {
         $this->bpas->checkPermissions('index', true);
@@ -5920,7 +5920,36 @@ class Products extends MY_Controller
             $this->load->view($this->theme.'stock_using/print_enter_using_stock_return',$this->data);
         }
     }
-    
+    public function modal_using_stock_view($id = null, $type = 'use')
+    {
+        $this->bpas->checkPermissions('using_stock');
+        if($type=="use"){
+            $using_stock = $this->products_model->get_enter_using_stock_by_id($id);
+            $ref_no      = $using_stock->reference_no;
+            $stock_item  = $this->products_model->get_enter_using_stock_item_by_ref($ref_no);
+            $stock_finish_item  = $this->products_model->get_enter_finish_stock_item_by_ref($ref_no);
+            
+            $this->data['using_stock']  = $using_stock;
+            $this->data['stock_item']   = $stock_item; 
+            $this->data['stock_finish_item']   = $stock_finish_item; 
+            $this->data['info']         = $this->products_model->get_enter_using_stock_info(); 
+            $this->data['biller']       = $this->products_model->getUsingStockProject($id);
+            $this->data['au_info']      = $this->products_model->getAuInfo($id);
+            // var_dump($using_stock);exit();
+            $this->load->view($this->theme.'stock_using/modal_view',$this->data);
+        }
+        if($type=="return"){
+            $using_stock = $this->products_model->get_enter_using_stock_by_id($id);
+            $ref_no=$using_stock->reference_no;
+            $using_id=$using_stock->id;
+            $stock_item=$this->products_model->get_enter_using_stock_item_by_using_id($using_id);
+            $this->data['info']         = $this->products_model->get_enter_using_stock_info();
+            $this->data['biller']       = $this->products_model->getUsingStockProject($id);
+             $this->data['using_stock'] = $using_stock; 
+             $this->data['stock_item'] = $stock_item; 
+            $this->load->view($this->theme.'stock_using/modal_return_view',$this->data);
+        }
+    }
     public function print_using_stock_by_id($id, $type)
     {
         $this->bpas->checkPermissions('using_stock');
@@ -6546,6 +6575,11 @@ class Products extends MY_Controller
         $this->bpas->checkPermissions('using_stock', null, 'products');
         $this->form_validation->set_rules('from_location', lang("from_location"), 'required');
         $this->form_validation->set_rules('return_reference_no', lang("return_reference_no"), 'required');
+        $using_stock = $this->products_model->getUsingStockByUsingID($id);
+         if ($using_stock) {
+            $this->session->set_flashdata('error', lang('that_stock_was_returned'));
+            redirect($_SERVER['HTTP_REFERER']);
+        }
         if ($this->form_validation->run() == true) {
             if ($this->Owner || $this->Admin || $this->GP['change_date']) {
                 $date = $this->bpas->fld($this->input->post('date'));
@@ -6565,6 +6599,7 @@ class Products extends MY_Controller
             $biller_id       = $this->input->post('biller');
             $note            = $this->input->post('note');
             $total_item_cost = 0;
+            
             //start using stock data
             $i = sizeof($_POST['product_id']);
             for ($r = 0; $r < $i; $r++) {
@@ -6588,22 +6623,20 @@ class Products extends MY_Controller
                 //     $this->session->set_flashdata('error', $this->lang->line("unexpected_value") );
                 //     redirect($_SERVER["HTTP_REFERER"]);
                 // } 
-                $combo_products = json_decode($_POST['product_combo'][$r]);
-                // var_dump($combo_products);
-                // exit();
-                foreach ($combo_products as $combo_product) {
-                            $combo_id    = $combo_product->id;
-                            $combo_code  = $combo_product->code;
-                            $combo_name  = $combo_product->name; 
-                            $combo_wax_setting = $combo_product->wax_setting_qty;
-                            $combo_casting = $combo_product->casting_qty;
-                            $combo_filing_pre_polishing = $combo_product->filing_pre_polishing_qty;
-                            $combo_stone_setting = $combo_product->stone_setting_qty;
-                            $combo_final_polishing = $combo_product->final_polishing_qty;
-                            $combo_quality_inspection = $combo_product->quality_inspection_qty;
-                            $combo_packaging = $combo_product->packaging_qty;
+                
+                // foreach ($combo_products as $combo_product) {
+                //             $combo_id    = $combo_product->id;
+                //             $combo_code  = $combo_product->code;
+                //             $combo_name  = $combo_product->name; 
+                //             $combo_wax_setting = $combo_product->wax_setting_qty;
+                //             $combo_casting = $combo_product->casting_qty;
+                //             $combo_filing_pre_polishing = $combo_product->filing_pre_polishing_qty;
+                //             $combo_stone_setting = $combo_product->stone_setting_qty;
+                //             $combo_final_polishing = $combo_product->final_polishing_qty;
+                //             $combo_quality_inspection = $combo_product->quality_inspection_qty;
+                //             $combo_packaging = $combo_product->packaging_qty;
 
-                }
+                // }
                 // var_dump($combo_products);
                 // exit();
                 $product_details = $this->site->getProductByID($product_id);
@@ -6694,6 +6727,9 @@ class Products extends MY_Controller
                 $qty_balance         = $qty_use_finish;
                 $option_id_finish    = null;
                 $total_cost          = $product_cost_finish * $qty_balance; 
+                $combo_products = json_decode($_POST['product_combo'][$r]);
+                // var_dump($combo_products);
+                // exit();
                 // if ($qty_balance == 0) {
                 //     $this->session->set_flashdata('error', $this->lang->line("unexpected_value") );
                 //     redirect($_SERVER["HTTP_REFERER"]);
